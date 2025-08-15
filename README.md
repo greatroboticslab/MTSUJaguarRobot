@@ -7,11 +7,17 @@ A comprehensive web-based robot control application built with Flask that provid
 **Option 1: Automated Setup (Recommended)**
 ```bash
 cd /path/to/MTSUJaguarRobot
-./setup.sh          # Setup everything
-./setup.sh start     # Setup and start app automatically
+./setup/setup.sh          # Setup everything
+./setup/setup.sh start     # Setup and start app automatically
 ```
 
-**Option 2: Manual Setup**
+**Option 2: Simple Start (If already set up)**
+```bash
+cd /path/to/MTSUJaguarRobot
+./start.sh                 # Quick start script
+```
+
+**Option 3: Manual Setup**
 ```bash
 # 1. Setup environment
 cd /path/to/MTSUJaguarRobot
@@ -20,10 +26,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Test setup (optional)
-python3 test_setup.py
+python3 setup/test_setup.py
 
 # 3. Start application
-python3 app.py
+python3 src/app.py
 
 # 4. Open browser
 # Navigate to: http://127.0.0.1:5014
@@ -85,11 +91,11 @@ python3 app.py
    pip install -r requirements.txt
    ```
 
-4. Configure network settings (if needed):
+3. Configure network settings (if needed):
    ```bash
-   python3 network_config.py robot    # Switch to robot network
-   python3 network_config.py internet # Switch to internet
-   python3 network_config.py status   # Check current network
+   python3 setup/network_config.py robot    # Switch to robot network
+   python3 setup/network_config.py internet # Switch to internet
+   python3 setup/network_config.py status   # Check current network
    ```
 
 ## Getting Started - Step by Step
@@ -166,7 +172,7 @@ Testing dependencies...
 
 🎉 ALL TESTS PASSED!
 Your setup is ready. You can now run:
-   python3 app.py
+   python3 src/app.py
 ```
 
 #### Step 3: Access the Web Interface
@@ -205,12 +211,12 @@ Only needed when controlling actual robot hardware.
 
 2. **Configure Network Settings:**
    ```bash
-   python3 network_config.py robot
+   python3 setup/network_config.py robot
    ```
 
 3. **Start the Application:**
    ```bash
-   python3 app.py
+   python3 src/app.py
    ```
 
 **Expected differences:**
@@ -274,7 +280,7 @@ After completing setup, verify everything works:
 
 - [ ] **Python Environment:** `python3 --version` shows 3.10+
 - [ ] **Dependencies:** `pip list` shows flask, paho-mqtt, opencv-python
-- [ ] **App Starts:** Running `python3 app.py` shows Flask server starting
+- [ ] **App Starts:** Running `python3 src/app.py` shows Flask server starting
 - [ ] **Web Interface:** `http://127.0.0.1:5014` loads the control interface
 - [ ] **No Critical Errors:** Only MQTT timeout messages (acceptable without robot)
 
@@ -522,17 +528,24 @@ The application runs in debug mode by default. Check the console output for:
 ### File Structure
 ```
 MTSUJaguarRobot/
-├── app.py              # Main Flask application
-├── network_config.py   # Network switching utility
-├── test_setup.py       # Setup verification script
-├── setup.sh            # Automated setup script
-├── requirements.txt    # Python dependencies
-├── templates/          # HTML templates
-│   ├── index.html     # Main control interface
-│   └── camera.html    # Camera view
-└── static/            # Static assets
-    ├── myhouse.osm    # Map data
-    └── robot.png      # Robot icon
+├── README.md               # Main documentation
+├── requirements.txt        # Python dependencies
+├── start.sh               # Quick start launcher
+├── .venv/                 # Virtual environment (created by setup)
+├── setup/                 # Setup and configuration scripts
+│   ├── setup.sh          # Automated setup script
+│   ├── test_setup.py     # Setup verification script
+│   └── network_config.py # Network switching utility
+├── src/                   # Main application source code
+│   ├── app.py            # Main Flask application
+│   ├── templates/        # HTML templates
+│   │   ├── index.html   # Main control interface
+│   │   └── camera.html  # Camera view
+│   └── static/          # Static assets
+│       ├── myhouse.osm  # Map data
+│       └── robot.png    # Robot icon
+└── docs/                 # Documentation
+    └── SETUP_COMPLETE.md # Setup completion guide
 ```
 
 ### Adding Features

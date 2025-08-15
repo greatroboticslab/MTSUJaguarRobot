@@ -5,6 +5,11 @@
 
 set -e  # Exit on any error
 
+# Get the directory where this script is located and change to project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
 echo "🚀 Robot Control System - Automated Setup"
 echo "========================================="
 
@@ -46,21 +51,21 @@ pip install -r requirements.txt
 
 # Run setup test
 echo "🧪 Running setup verification..."
-python3 test_setup.py
+python3 setup/test_setup.py
 
 echo ""
 echo "🎉 Setup complete!"
 echo ""
 echo "To start the application:"
-echo "  1. Run: python3 app.py"
+echo "  1. Run: python3 src/app.py"
 echo "  2. Open browser to: http://127.0.0.1:5014"
 echo ""
 echo "Or run this script with 'start' to automatically start the app:"
-echo "  ./setup.sh start"
+echo "  ./setup/setup.sh start"
 echo ""
 
 # Auto-start if requested
 if [ "$1" = "start" ]; then
     echo "🚀 Starting application..."
-    python3 app.py
+    python3 src/app.py
 fi

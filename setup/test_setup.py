@@ -46,10 +46,6 @@ def test_app_import():
     """Test if the main app can be imported without errors"""
     print("\nTesting app import...")
     try:
-        # Change to directory for import
-        import os
-        os.chdir('/Users/danielpowers/Desktop/MTSUJaguarRobot')
-        
         # Try importing the main modules
         from flask import Flask
         print("✅ Flask import successful")
@@ -91,14 +87,18 @@ def test_file_structure():
     print("\nTesting file structure...")
     import os
     
+    # Change to project root directory
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(project_root)
+    
     required_files = [
-        'app.py',
-        'network_config.py', 
+        'src/app.py',
+        'setup/network_config.py', 
         'requirements.txt',
-        'templates/index.html',
-        'templates/camera.html',
-        'static/robot.png',
-        'static/myhouse.osm'
+        'src/templates/index.html',
+        'src/templates/camera.html',
+        'src/static/robot.png',
+        'src/static/myhouse.osm'
     ]
     
     missing_files = []
@@ -154,7 +154,7 @@ def run_all_tests():
     if passed == total:
         print("\n🎉 ALL TESTS PASSED!")
         print("Your setup is ready. You can now run:")
-        print("   python3 app.py")
+        print("   python3 src/app.py")
         print("Then open: http://127.0.0.1:5014")
     else:
         print("\n⚠️  Some tests failed. Please fix the issues above.")
