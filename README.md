@@ -2,7 +2,11 @@
 
 Web-based robot control application for MTSU Jaguar Robot with real-time navigation, camera feed, and sensor data fusion.
 
-## 🚀 Quick Setup (30 seconds)
+> 🔄 **Returning users:** Jump to [Already Set Up? Quick Start!](#already-set-up-quick-start-️) below
+
+## 🚀 Quick Setup
+
+### First-Time Setup (New Machine)
 
 **For Development/Testing (no robot hardware):**
 ```bash
@@ -24,10 +28,32 @@ python3 setup/network_config.py robot
 ./start.sh
 ```
 
-**Alternative options:**
+### Already Set Up? Quick Start! 🏃‍♂️
+
+**If this machine already has the robot code installed:**
+
+1. **Open terminal** in project folder:
+   ```bash
+   cd /path/to/MTSUJaguarRobot
+   ```
+
+2. **Connect to robot WiFi** (if controlling robot):
+   - Use your system's WiFi settings to connect to: `DirJaguar` / `drrobotdrrobot`
+
+3. **Start the app** (one command):
+   ```bash
+   ./start.sh
+   ```
+
+4. **Control the robot**:
+   - **Ctrl+click** the provided link: `http://127.0.0.1:5014`
+   - Use WASD keys to control
+
+**That's it! No setup required on previously configured machines.**
+
+**Alternative start options:**
 ```bash
-./start.sh                 # If already set up
-python3 src/app.py         # Manual start
+python3 src/app.py         # Direct start without launcher
 ```
 
 Then open: **http://127.0.0.1:5014**
@@ -96,7 +122,7 @@ echo "nameserver 192.168.0.1" | sudo tee /etc/resolv.conf
 # DNS: 192.168.0.1
 ```
 
-**Required Settings:**
+**Required Internet Settings:**
 - IP Address: `192.168.0.109`
 - Subnet Mask: `255.255.255.0`
 - Gateway: `192.168.0.1`
@@ -128,6 +154,11 @@ echo "nameserver 192.168.0.1" | sudo tee /etc/resolv.conf
 MQTT timeouts are normal/expected without robot connection.
 
 **To control actual robot**: Follow "Robot Network Setup" above to switch networks.
+- In interface click **Connect Robot**
+- - Green = Connnected
+- - Red = Not Connected
+- Click **Camera** to see live camera feed
+- Click **PID** and set speed from any range **0-500**
 
 ## 📁 Project Structure
 
