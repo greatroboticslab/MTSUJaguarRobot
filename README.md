@@ -36,6 +36,43 @@ Then open: **http://127.0.0.1:5014**
 2. Configure network: `python3 setup/network_config.py robot`
 3. Start app: `./start.sh`
 
+### Manual Network Configuration
+
+If the automated script doesn't work, configure manually:
+
+**macOS/Linux:**
+```bash
+# Set static IP
+sudo ifconfig en0 192.168.0.109 netmask 255.255.255.0
+sudo route add default 192.168.0.1
+
+# Set DNS
+echo "nameserver 192.168.0.1" | sudo tee /etc/resolv.conf
+```
+
+**Windows:**
+```cmd
+# Open Network settings > Change adapter options
+# Right-click WiFi > Properties > IPv4 > Use the following IP:
+# IP: 192.168.0.109
+# Subnet: 255.255.255.0
+# Gateway: 192.168.0.1
+# DNS: 192.168.0.1
+```
+
+**Required Settings:**
+- IP Address: `192.168.0.109`
+- Subnet Mask: `255.255.255.0`
+- Gateway: `192.168.0.1`
+- DNS Server: `192.168.0.1`
+
+**Switch back to internet:** `python3 setup/network_config.py internet`
+
+**Robot Connection Details:**
+- Robot Control: `192.168.0.60:10001`
+- Camera Feed: `192.168.0.65:8081`
+- MQTT Broker: `192.168.1.103:1883`
+
 ## 📋 Features
 
 - **Real-time Control** - WASD keyboard controls
