@@ -4,9 +4,24 @@ Web-based robot control application for MTSU Jaguar Robot with real-time navigat
 
 ## 🚀 Quick Setup (30 seconds)
 
+**For Development/Testing (no robot hardware):**
 ```bash
 cd /path/to/MTSUJaguarRobot
 ./setup/setup.sh start     # One command - sets up everything and starts app
+```
+
+**For Robot Control (with robot hardware):**
+```bash
+# 1. First setup on internet connection
+cd /path/to/MTSUJaguarRobot
+./setup/setup.sh           # Download dependencies while on internet
+
+# 2. Switch to robot WiFi: DirJaguar / drrobotdrrobot
+# 3. Configure robot network
+python3 setup/network_config.py robot
+
+# 4. Start controlling robot
+./start.sh
 ```
 
 **Alternative options:**
@@ -30,11 +45,32 @@ Then open: **http://127.0.0.1:5014**
 
 ## 🔧 Robot Network Setup
 
-**Only needed when controlling actual robot:**
+**⚠️ Important: Setup dependencies on internet first, then switch to robot WiFi**
 
-1. Connect to WiFi: `DirJaguar` / `drrobotdrrobot`
-2. Configure network: `python3 setup/network_config.py robot`
-3. Start app: `./start.sh`
+**Complete Robot Setup Workflow:**
+
+1. **Setup on Internet** (download dependencies):
+   ```bash
+   ./setup/setup.sh  # Must be done on internet connection
+   ```
+
+2. **Switch to Robot WiFi**: 
+   - Connect to: `DirJaguar` / `drrobotdrrobot`
+
+3. **Configure Robot Network**:
+   ```bash
+   python3 setup/network_config.py robot
+   ```
+
+4. **Start Robot Control**:
+   ```bash
+   ./start.sh
+   ```
+
+5. **Switch Back to Internet** (when done):
+   ```bash
+   python3 setup/network_config.py internet
+   ```
 
 ### Manual Network Configuration
 
@@ -83,13 +119,15 @@ echo "nameserver 192.168.0.1" | sudo tee /etc/resolv.conf
 
 ## 🛠️ Development Mode
 
-Without robot hardware, the app still works for:
+**On your regular internet connection**, the app works for:
 - Testing web interface
 - Developing new features
 - UI demonstrations
 - Learning the codebase
 
 MQTT timeouts are normal/expected without robot connection.
+
+**To control actual robot**: Follow "Robot Network Setup" above to switch networks.
 
 ## 📁 Project Structure
 
