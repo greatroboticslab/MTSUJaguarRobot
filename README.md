@@ -39,6 +39,14 @@ python3 setup/network_config.py robot
 
 2. **Connect to robot WiFi** (if controlling robot):
    - Use your system's WiFi settings to connect to: `DirJaguar` / `drrobotdrrobot`
+   - If using MacOS, run
+     ```bash
+     python3 network_config.py robot
+     ```
+     If you want to connect back to wifi on MacOS, run
+     ```bash
+     python3 network_config.py internet
+     ```
 
 3. **Start the app** (one command):
    ```bash
