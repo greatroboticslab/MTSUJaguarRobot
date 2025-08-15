@@ -45,6 +45,16 @@ navigation_thread = None
 navigation_direction = 1  # 1 for forward, -1 for backward
 navigation_cycle_time = 3  # seconds per direction
 
+# Command rate limiting variables
+last_command_time = 0
+command_delay = 0.1  # Minimum delay between commands in seconds (100ms)
+
+# Stop command variables
+last_movement_time = 0
+stop_timeout = 0.3  # Send stop if no movement commands for 300ms
+stop_thread = None
+stop_thread_active = False
+
 def camera_stream():
     global camera_cap, camera_running, latest_frame
     camera_cap = cv2.VideoCapture(camera_url)
@@ -294,7 +304,7 @@ def process_data():
             print("Error in data processing:", e)
 
 # Initialize MQTT client
-mqtt_client = mqtt.Client()
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 mqtt_reconnect_delay = 1  # Start with 1 second delay
@@ -483,8 +493,26 @@ def connect_robot():
 
 @app.route('/robot-cmd', methods=['POST'])
 def robot_cmd():
+    global last_command_time, last_movement_time
+    
+    # Rate limiting: check if enough time has passed since last command
+    current_time = time.time()
+    time_since_last = current_time - last_command_time
+    
+    if time_since_last < command_delay:
+        # Too soon, ignore this command to prevent backlog
+        return jsonify({'success': True, 'throttled': True})
+    
+    # Update last command time
+    last_command_time = current_time
+    
     data = request.json
     cmd = data.get('cmd', '').lower()
+    
+    # Track movement commands (not stop commands)
+    if cmd in ['w', 's', 'a', 'd']:
+        last_movement_time = current_time
+    
     if cmd == 'w':
         robot_forward()
     elif cmd == 's':
@@ -495,6 +523,8 @@ def robot_cmd():
         robot_right()
     elif cmd == 'stop':
         robot_stop()
+        # Reset movement time when explicit stop is sent
+        last_movement_time = 0
     elif cmd == 'n':  # Navigate command
         if navigation_active:
             stop_navigation()
@@ -502,7 +532,7 @@ def robot_cmd():
             start_navigation()
     else:
         print("Unknown command:", cmd)
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'throttled': False})
 
 @app.route('/navigation-status')
 def get_navigation_status():
@@ -581,5 +611,37 @@ def toggle_camera():
     
     return jsonify({'success': False, 'error': 'Invalid action'})
 
+def auto_stop_monitor():
+    """Monitor for lack of movement commands and send stop commands"""
+    global stop_thread_active, last_movement_time
+    
+    while stop_thread_active:
+        current_time = time.time()
+        time_since_movement = current_time - last_movement_time
+        
+        # If no movement commands for stop_timeout duration, send stop commands
+        if time_since_movement > stop_timeout and last_movement_time > 0:
+            print("No movement commands detected, sending stop commands...")
+            # Send multiple stop commands to ensure robot stops
+            for i in range(3):
+                robot_stop()
+                time.sleep(0.05)  # Small delay between stop commands
+            
+            # Reset to prevent continuous stopping
+            last_movement_time = 0
+        
+        time.sleep(0.1)  # Check every 100ms
+
+def start_auto_stop_monitor():
+    """Start the auto-stop monitoring thread"""
+    global stop_thread, stop_thread_active
+    if not stop_thread_active:
+        stop_thread_active = True
+        stop_thread = threading.Thread(target=auto_stop_monitor, daemon=True)
+        stop_thread.start()
+        print("Auto-stop monitor started")
+
 if __name__ == '__main__':
+    # Start the auto-stop monitor
+    start_auto_stop_monitor()
     app.run(host='0.0.0.0', port=5014, debug=True)
