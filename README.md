@@ -4,7 +4,7 @@ Web-based robot control application for MTSU Jaguar Robot with real-time navigat
 
 > 🔄 **Returning users:** Jump to [Already Set Up? Quick Start!](#already-set-up-quick-start-️) below
 
-## Youtube Setup Tutorial Video Link: https://youtu.be/fRm_X7DfuXw?si=GvWGdrgBQc8AHm_P
+### **Youtube Setup Tutorial Video Link: https://youtu.be/fRm_X7DfuXw?si=GvWGdrgBQc8AHm_P**
 
 ## 🚀 Quick Setup
 
