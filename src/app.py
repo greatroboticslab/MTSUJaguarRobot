@@ -748,20 +748,25 @@ def robot_autopilot():
     return jsonify({'success': True})
 
 @app.route('/pid-update', methods=['POST'])
+@app.route('/pid-update', methods=['POST'])
 def pid_update():
+    global navigation_cycle_time
     data = request.get_json() or {}
     try:
         pid_params.kp = float(data.get('kp', pid_params.kp))
         pid_params.ki = float(data.get('ki', pid_params.ki))
         pid_params.kd = float(data.get('kd', pid_params.kd))
         pid_params.speed = int(data.get('speed', pid_params.speed))
+        if 'nav' in data:
+            navigation_cycle_time = max(1, float(data.get('nav')))
     except Exception as e:
         print("Error updating PID:", e)
     return jsonify({
         "kp": pid_params.kp,
         "ki": pid_params.ki,
         "kd": pid_params.kd,
-        "speed": pid_params.speed
+        "speed": pid_params.speed,
+        "nav": navigation_cycle_time
     })
 
 # NEW: Navigation configuration endpoints
