@@ -330,6 +330,7 @@
         <label>Ki:</label><input type="number" step="0.1" id="ki" value="0.0"><br><br>
         <label>Kd:</label><input type="number" step="0.1" id="kd" value="0.0"><br><br>
         <label>Spd:</label><input type="number" step="10" id="speed" value="150"><br><br>
+	<label>NavDur:</label><input type="number" step="1" id="nav" value="20"><br><br>
         <button id="pid-update-btn">Update</button>
     </div>
 
@@ -351,7 +352,7 @@
         // autopilot
         let autopilotOn = false;
         let currentTargetIndex = 0;
-        let userKp = 1.0, userKi = 0.0, userKd = 0.0;
+        let userKp = 1.0, userKi = 0.0, userKd = 0.0, userNav = 20;
         let userIntegral = 0.0, prevError = 0.0;
 
         // lock heading => revolve #map
@@ -866,18 +867,20 @@
             const kiVal = document.getElementById('ki').value;
             const kdVal = document.getElementById('kd').value;
             const spVal = document.getElementById('speed').value;
+	    const navDur = document.getElementById('nav').value;
 
             fetch('/pid-update', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({kp: kpVal, ki: kiVal, kd: kdVal, speed: spVal})
+                body: JSON.stringify({kp: kpVal, ki: kiVal, kd: kdVal, speed: spVal, nav: navDur})
             })
             .then(r=> r.json())
             .then(d=>{
-                alert(`PID/Speed updated:\nKp=${d.kp}\nKi=${d.ki}\nKd=${d.kd}\nSpeed=${d.speed}`);
+                alert(`PID/Speed updated:\nKp=${d.kp}\nKi=${d.ki}\nKd=${d.kd}\nSpeed=${d.speed}\nNavDur${d.nav}`);
                 userKp = parseFloat(d.kp);
                 userKi = parseFloat(d.ki);
                 userKd = parseFloat(d.kd);
+		userNav = parseFloat(d.nav);
                 userIntegral = 0;
                 prevError = 0;
             })
