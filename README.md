@@ -4,25 +4,30 @@ Web-based robot control application for MTSU Jaguar Robot with real-time navigat
 
 > 🔄 **Returning users:** Jump to [Already Set Up? Quick Start!](#already-set-up-quick-start-️) below
 
-### Youtube Setup Tutorial Video Link: https://youtu.be/fRm_X7DfuXw?si=GvWGdrgBQc8AHm_P
-
 ## 🚀 Quick Setup
 
 ### First-Time Setup (New Machine)
 
-**For Development/Testing (no robot hardware):**
+**For Development/Testing (to download robot hardware):**
+
+Donwload Jaguar files including, setup folder from google drive
+Enter terminal and enter this command
+
 ```bash
 cd /path/to/MTSUJaguarRobot
 ./setup/setup.sh start     # One command - sets up everything and starts app
 ```
 
-**For Robot Control (with robot hardware):**
+**For Robot Control (to use robot hardware for first time):**
 ```bash
-# 1. First setup on internet connection
+# 1. First setup internet connection
+**Make sure to see important configurations below**
 cd /path/to/MTSUJaguarRobot
 ./setup/setup.sh           # Download dependencies while on internet
 
 # 2. Switch to robot WiFi: DirJaguar / drrobotdrrobot
+Connect to: `DirJaguar` / password: `drrobotdrrobot`
+
 # 3. Configure robot network
 python3 setup/network_config.py robot
 
@@ -41,14 +46,6 @@ python3 setup/network_config.py robot
 
 2. **Connect to robot WiFi** (if controlling robot):
    - Use your system's WiFi settings to connect to: `DirJaguar` / `drrobotdrrobot`
-   - If using MacOS, run
-     ```bash
-     python3 network_config.py robot
-     ```
-     If you want to connect back to wifi on MacOS, run
-     ```bash
-     python3 network_config.py internet
-     ```
 
 3. **Start the app** (one command):
    ```bash
@@ -58,6 +55,10 @@ python3 setup/network_config.py robot
 4. **Control the robot**:
    - **Ctrl+click** the provided link: `http://127.0.0.1:5014`
    - Use WASD keys to control
+5. **Auto-Capture**:
+   -Press the camera button
+   -Press the photo button
+   -To stop capturing press the photo button again
 
 **That's it! No setup required on previously configured machines.**
 
