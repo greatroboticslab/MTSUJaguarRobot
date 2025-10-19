@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request, Response
+from flask import Flask, render_template, jsonify, request, Response, send_file
 import paho.mqtt.client as mqtt
 import json
 import threading
@@ -9,6 +9,8 @@ import time
 import cv2
 import os
 from datetime import datetime
+import csv
+from collections import deque
 
 app = Flask(__name__)
 
@@ -17,52 +19,65 @@ PHOTOS_DIR = 'captured_photos'
 if not os.path.exists(PHOTOS_DIR):
     os.makedirs(PHOTOS_DIR)
 
+# Data logging variables
+data_logging_active = False
+data_log_file = None
+data_log_writer = None
+data_log_buffer = deque(maxlen=100)
+data_log_interval = 0.5
+last_log_time = 0
+DATA_LOGS_DIR = 'sensor_logs'
+
+# Create logs directory if it doesn't exist
+if not os.path.exists(DATA_LOGS_DIR):
+    os.makedirs(DATA_LOGS_DIR)
+
 # ------------------ Global Storage for Data ------------------ #
 current_data = {
-    'imu': None,         # raw IMU
-    'gps': None,         # raw GPS
-    'fused': None,       # fused/filtered navigation data
-    'camera': None,      # camera tracking data
-    'weed_detections': [],  # weed detection data
-    'laser': {           # laser status and parameters
+    'imu': None,
+    'gps': None,
+    'fused': None,
+    'camera': None,
+    'weed_detections': [],
+    'laser': {
         'status': 'OFF',
-        'power': 2,      # Changed from 5 to 2 for safety
+        'power': 2,
         'aim_power': 2,
         'duration': 5,
         'safety_delay': 2,
-        'mode': 'MANUAL'  # 'MANUAL' or 'AUTO'
+        'mode': 'MANUAL'
     }
 }
 
 # Latest camera frame
 latest_frame = None
-mqtt_received_data = []  # Stores raw MQTT data
+mqtt_received_data = []
 data_queue = queue.Queue()
-mqtt_connected = False  # Track MQTT connection status
+mqtt_connected = False
 
-# 摄像头相关变量
+# Camera variables
 camera_url = "http://root:drrobot@192.168.0.65:8081/axis-cgi/mjpg/video.cgi"
 camera_cap = None
 camera_thread = None
 camera_running = False
 
-# Navigation mode variables - IMPROVED
+# Navigation mode variables
 navigation_active = False
 navigation_thread = None
-navigation_direction = 1  # 1 for forward, -1 for backward
-navigation_cycle_time = 20  # seconds per direction
-navigation_command_interval = 0.5  # Send commands every 500ms for persistence
-navigation_ramp_time = 1.0  # Time to ramp up/down speed
-navigation_max_speed = None  # Will use pid_params.speed if None
-navigation_min_speed = 50   # Minimum speed for reliable movement
+navigation_direction = 1
+navigation_cycle_time = 20
+navigation_command_interval = 0.5
+navigation_ramp_time = 1.0
+navigation_max_speed = None
+navigation_min_speed = 50
 
 # Command rate limiting variables
 last_command_time = 0
-command_delay = 0.1  # Minimum delay between commands in seconds (100ms)
+command_delay = 0.1
 
 # Stop command variables
 last_movement_time = 0
-stop_timeout = 0.3  # Send stop if no movement commands for 300ms
+stop_timeout = 0.3
 stop_thread = None
 stop_thread_active = False
 
@@ -75,7 +90,7 @@ def camera_stream():
         ret, frame = camera_cap.read()
         if ret:
             latest_frame = frame
-        time.sleep(0.03)  # 约30fps
+        time.sleep(0.03)
     
     if camera_cap:
         camera_cap.release()
@@ -99,53 +114,36 @@ class PIDParams:
         self.kp = 1.0
         self.ki = 0.0
         self.kd = 0.0
-        self.speed = 150  # default speed
+        self.speed = 150
 
 pid_params = PIDParams()
 
 # ------------------ Extended FusionState ------------------ #
 class FusionState:
-    """
-    A lightweight structure to track fused heading and lat/lon.
-    Weighted approach:
-      - Weighted heading (GPS-based vs IMU-based)
-      - Weighted position (GPS vs short-range IMU)
-      - Basic friction logic: if rotating but heading not changing => up speed
-      - Supports static detection if movement < threshold => zero out acc
-      - Dynamic offset correction if traveling > 5m in same direction => heading_offset
-    """
     def __init__(self):
         self.lat = 0.0
         self.lon = 0.0
         self.heading = 0.0
-
         self.last_gps_lat = None
         self.last_gps_lon = None
         self.last_update_time = time.time()
         self.last_heading = 0.0
-
         self.turn_stuck_counter = 0
         self.turn_override_speed = None
-
-        # IMU accel bias if needed
         self.imu_accX_bias = 0.0
         self.imu_accY_bias = 0.0
-
-        # heading offset for dynamic correction
         self.heading_offset = 0.0
-
-        # For dynamic correction
         self.last_gps_heading = None
         self.dist_same_dir = 0.0
 
 fusion_state = FusionState()
 
 # thresholds
-GPS_NOISE_THRESHOLD   = 2       # if distance <2 => consider ~static
-STATIC_ACC_THRESHOLD  = 100.0   # if |accX|,|accY|<100 => consider static
-DIRECTION_DIFF_MAX    = 10.0    # if gps heading differs <10°, consider same direction
-MIN_DISTANCE_CORRECT  = 5.0     # 5m => begin offset correction
-MAX_TRUST_DISTANCE    = 100.0   # up to 100m => 100% trust
+GPS_NOISE_THRESHOLD   = 2
+STATIC_ACC_THRESHOLD  = 100.0
+DIRECTION_DIFF_MAX    = 10.0
+MIN_DISTANCE_CORRECT  = 5.0
+MAX_TRUST_DISTANCE    = 100.0
 
 def on_connect(client, userdata, flags, rc):
     global mqtt_connected
@@ -156,7 +154,7 @@ def on_connect(client, userdata, flags, rc):
             ("IMU/data", 0),
             ("CAMERA/tracking", 0),
             ("camera/detections", 0),
-            ("camera/frame", 0)  # Subscribe to camera frames
+            ("camera/frame", 0)
         ])
     else:
         print(f"Failed to connect to MQTT broker with result code {rc}")
@@ -173,7 +171,6 @@ def on_message(client, userdata, msg):
         print(f"Error processing message: {e}")
 
 def distance_meters(lat1, lon1, lat2, lon2):
-    # basic haversine
     R = 6371000.0
     dLat = math.radians(lat2 - lat1)
     dLon = math.radians(lon2 - lon1)
@@ -185,7 +182,6 @@ def bearing_degs(lat1, lon1, lat2, lon2):
     dLat = lat2 - lat1
     dLon = lon2 - lon1
     if abs(dLat) > 1e-7 or abs(dLon) > 1e-7:
-        # original approach
         bearing = math.degrees(math.atan2(math.radians(dLon), math.radians(dLat)))
         return (bearing + 360) % 360
     else:
@@ -224,10 +220,8 @@ def process_data():
                 if abs(dLat) > 1e-7 or abs(dLon) > 1e-7:
                     gps_heading = bearing_degs(fusion_state.last_gps_lat, fusion_state.last_gps_lon, gps_lat, gps_lon)
 
-            # apply heading_offset
             corrected_imu_heading = (imu_heading + fusion_state.heading_offset) % 360
 
-            # Weighted heading
             alpha_imu = 0.4
             alpha_gps = 0.6
             fused_heading = corrected_imu_heading
@@ -239,18 +233,15 @@ def process_data():
             else:
                 fused_heading = corrected_imu_heading
 
-            # Weighted lat/lon
             alpha_pos_imu = 0.4
             alpha_pos_gps = 0.6
             lat_fused = alpha_pos_imu * fusion_state.lat + alpha_pos_gps * gps_lat
             lon_fused = alpha_pos_imu * fusion_state.lon + alpha_pos_gps * gps_lon
 
-            # If "not moving", set acc=0
             if dist < GPS_NOISE_THRESHOLD or (abs(imu_accX) < STATIC_ACC_THRESHOLD and abs(imu_accY) < STATIC_ACC_THRESHOLD):
                 imu_accX = 0.0
                 imu_accY = 0.0
 
-            # friction logic
             dHeading = abs(fused_heading - fusion_state.last_heading)
             if dHeading < 1.0 and dt > 0:
                 fusion_state.turn_stuck_counter += 1
@@ -260,14 +251,12 @@ def process_data():
                 fusion_state.turn_stuck_counter = 0
                 fusion_state.turn_override_speed = None
 
-            # dynamic offset correction
             if gps_heading is not None:
                 if fusion_state.last_gps_heading is None:
                     fusion_state.last_gps_heading = gps_heading
                     fusion_state.dist_same_dir = 0.0
                 else:
                     dir_diff = abs(gps_heading - fusion_state.last_gps_heading)
-                    # normalize to [-180..180]
                     dir_diff = ((dir_diff + 180) % 360) - 180
                     if abs(dir_diff) < DIRECTION_DIFF_MAX:
                         fusion_state.dist_same_dir += dist
@@ -314,12 +303,122 @@ def process_data():
         except Exception as e:
             print("Error in data processing:", e)
 
+def log_sensor_data():
+    """Log IMU and GPS data to CSV file"""
+    global data_log_file, data_log_writer, last_log_time
+    
+    while data_logging_active:
+        current_time = time.time()
+        
+        if current_time - last_log_time >= data_log_interval:
+            try:
+                if current_data['imu'] and current_data['gps']:
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                    
+                    data_row = {
+                        'timestamp': timestamp,
+                        'unix_time': current_time,
+                        'gps_lat': current_data['gps']['lat'],
+                        'gps_lon': current_data['gps']['lon'],
+                        'imu_heading': current_data['imu']['heading'],
+                        'imu_accX': current_data['imu']['accX'],
+                        'imu_accY': current_data['imu']['accY'],
+                    }
+                    
+                    if current_data.get('fused'):
+                        data_row['fused_lat'] = current_data['fused']['lat']
+                        data_row['fused_lon'] = current_data['fused']['lon']
+                        data_row['fused_heading'] = current_data['fused']['heading']
+                    
+                    data_log_buffer.append(data_row)
+                    
+                    if data_log_writer and len(data_log_buffer) > 0:
+                        while len(data_log_buffer) > 0:
+                            row = data_log_buffer.popleft()
+                            data_log_writer.writerow(row)
+                        data_log_file.flush()
+                    
+                    last_log_time = current_time
+                    
+            except Exception as e:
+                print(f"Error logging sensor data: {e}")
+        
+        time.sleep(0.1)
+
+def start_data_logging():
+    """Start logging sensor data to a new CSV file"""
+    global data_logging_active, data_log_file, data_log_writer, last_log_time
+    
+    if data_logging_active:
+        print("Data logging already active")
+        return False, None
+    
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'sensor_log_{timestamp}.csv'
+        filepath = os.path.join(DATA_LOGS_DIR, filename)
+        
+        data_log_file = open(filepath, 'w', newline='')
+        
+        fieldnames = [
+            'timestamp', 'unix_time',
+            'gps_lat', 'gps_lon',
+            'imu_heading', 'imu_accX', 'imu_accY',
+            'fused_lat', 'fused_lon', 'fused_heading'
+        ]
+        
+        data_log_writer = csv.DictWriter(data_log_file, fieldnames=fieldnames)
+        data_log_writer.writeheader()
+        data_log_file.flush()
+        
+        data_logging_active = True
+        last_log_time = time.time()
+        
+        log_thread = threading.Thread(target=log_sensor_data, daemon=True)
+        log_thread.start()
+        
+        print(f"Started data logging to: {filename}")
+        return True, filename
+        
+    except Exception as e:
+        print(f"Error starting data logging: {e}")
+        return False, None
+
+def stop_data_logging():
+    """Stop logging sensor data and close the file"""
+    global data_logging_active, data_log_file, data_log_writer
+    
+    if not data_logging_active:
+        print("Data logging not active")
+        return False
+    
+    try:
+        data_logging_active = False
+        
+        if data_log_writer and len(data_log_buffer) > 0:
+            while len(data_log_buffer) > 0:
+                row = data_log_buffer.popleft()
+                data_log_writer.writerow(row)
+        
+        if data_log_file:
+            data_log_file.flush()
+            data_log_file.close()
+            data_log_file = None
+            data_log_writer = None
+        
+        print("Data logging stopped")
+        return True
+        
+    except Exception as e:
+        print(f"Error stopping data logging: {e}")
+        return False
+
 # Initialize MQTT client
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
-mqtt_reconnect_delay = 1  # Start with 1 second delay
-mqtt_reconnect_max_delay = 60  # Maximum delay of 60 seconds
+mqtt_reconnect_delay = 1
+mqtt_reconnect_max_delay = 60
 mqtt_broker_ip = "192.168.1.103"
 mqtt_broker_port = 1883
 
@@ -330,35 +429,29 @@ def mqtt_connect_with_retry():
         global mqtt_reconnect_delay
         print(f"MQTT connection failed with code {rc}, retrying in {mqtt_reconnect_delay} seconds...")
         time.sleep(mqtt_reconnect_delay)
-        # Exponential backoff with cap
         mqtt_reconnect_delay = min(mqtt_reconnect_delay * 2, mqtt_reconnect_max_delay)
         mqtt_thread = threading.Thread(target=mqtt_connect_with_retry, daemon=True)
         mqtt_thread.start()
     
     try:
-        # Set temporary failure callback
         mqtt_client.on_connect = on_mqtt_connect_fail
         mqtt_client.connect(mqtt_broker_ip, mqtt_broker_port, 60)
         
-        # If we get here, connection succeeded, restore normal callback
         mqtt_client.on_connect = on_connect
         print(f"Connected to MQTT broker at {mqtt_broker_ip}:{mqtt_broker_port}")
-        mqtt_reconnect_delay = 1  # Reset delay on successful connection
+        mqtt_reconnect_delay = 1
         mqtt_connected = True
         mqtt_client.loop_forever()
     except Exception as e:
         print(f"MQTT connection error: {e}, retrying in {mqtt_reconnect_delay} seconds...")
         time.sleep(mqtt_reconnect_delay)
-        # Exponential backoff with cap
         mqtt_reconnect_delay = min(mqtt_reconnect_delay * 2, mqtt_reconnect_max_delay)
         mqtt_thread = threading.Thread(target=mqtt_connect_with_retry, daemon=True)
         mqtt_thread.start()
 
-# Start the data processing thread
 process_thread = threading.Thread(target=process_data, daemon=True)
 process_thread.start()
 
-# Start the MQTT client with retry capability
 mqtt_thread = threading.Thread(target=mqtt_connect_with_retry, daemon=True)
 mqtt_thread.start()
 
@@ -390,7 +483,6 @@ class RobotSocket:
         
         try:
             self.sock.sendall((cmd + "\r\n").encode())
-            # Set a timeout for receiving response
             self.sock.settimeout(1.0)
             resp = self.sock.recv(1024).decode()
             return resp
@@ -399,7 +491,6 @@ class RobotSocket:
             return None
         except Exception as e:
             print(f"Error sending command '{cmd}': {e}")
-            # Try to reconnect on error
             self.sock = None
             if self.connect():
                 try:
@@ -413,25 +504,18 @@ class RobotSocket:
 
 robot = RobotSocket('192.168.0.60', 10001)
 
-# ------------------ IMPROVED NAVIGATION FUNCTIONS ------------------ #
-
 def robot_forward_enhanced():
-    """Enhanced forward movement with error handling and confirmation"""
     try:
-        # Send motor go command first
         result1 = robot.send_command("MMW !MG")
-        time.sleep(0.05)  # Small delay between commands
+        time.sleep(0.05)
         
-        # Get current speed (use override speed if available)
         current_speed = fusion_state.turn_override_speed if fusion_state.turn_override_speed else pid_params.speed
         if navigation_max_speed:
             current_speed = min(current_speed, navigation_max_speed)
         current_speed = max(current_speed, navigation_min_speed)
         
-        # Send movement command with proper motor directions
         result2 = robot.send_command(f"MMW !M {current_speed} -{current_speed}")
         
-        # Verify commands were successful
         if result1 is None or result2 is None:
             print("Warning: Forward command may not have been received properly")
             return False
@@ -441,22 +525,17 @@ def robot_forward_enhanced():
         return False
 
 def robot_backward_enhanced():
-    """Enhanced backward movement with error handling and confirmation"""
     try:
-        # Send motor go command first
         result1 = robot.send_command("MMW !MG")
-        time.sleep(0.05)  # Small delay between commands
+        time.sleep(0.05)
         
-        # Get current speed
         current_speed = fusion_state.turn_override_speed if fusion_state.turn_override_speed else pid_params.speed
         if navigation_max_speed:
             current_speed = min(current_speed, navigation_max_speed)
         current_speed = max(current_speed, navigation_min_speed)
         
-        # Send movement command with proper motor directions for backward
         result2 = robot.send_command(f"MMW !M -{current_speed} {current_speed}")
         
-        # Verify commands were successful
         if result1 is None or result2 is None:
             print("Warning: Backward command may not have been received properly")
             return False
@@ -466,9 +545,7 @@ def robot_backward_enhanced():
         return False
 
 def robot_stop_enhanced():
-    """Enhanced stop with multiple confirmation commands"""
     try:
-        # Send multiple stop commands for reliability
         for i in range(3):
             robot.send_command("MMW !MG")
             time.sleep(0.02)
@@ -480,7 +557,6 @@ def robot_stop_enhanced():
         print(f"Error in robot_stop_enhanced: {e}")
         return False
 
-# Original movement functions (kept for compatibility)
 def robot_forward():
     robot.send_command("MMW !MG")
     robot.send_command(f"MMW !M {pid_params.speed} -{pid_params.speed}")
@@ -504,7 +580,6 @@ def robot_stop():
     robot.send_command("MMW !M 0 0")
 
 def navigation_cycle_improved():
-    """Improved navigation cycle with better command persistence and monitoring"""
     global navigation_active, navigation_direction
     
     print("Starting improved navigation cycle")
@@ -514,11 +589,9 @@ def navigation_cycle_improved():
         direction_name = "Forward" if navigation_direction == 1 else "Backward"
         print(f"Navigation: Starting {direction_name} cycle")
         
-        # Store initial position for monitoring (if available)
         initial_lat = fusion_state.lat if hasattr(fusion_state, 'lat') else None
         initial_lon = fusion_state.lon if hasattr(fusion_state, 'lon') else None
         
-        # Send initial movement command
         command_success = False
         if navigation_direction == 1:
             command_success = robot_forward_enhanced()
@@ -530,14 +603,12 @@ def navigation_cycle_improved():
             time.sleep(0.5)
             continue
         
-        # Maintain movement during cycle with periodic command refresh
         last_command_time = time.time()
         movement_confirmed = False
         
         while navigation_active and (time.time() - cycle_start_time) < navigation_cycle_time:
             current_time = time.time()
             
-            # Send refresh commands periodically
             if current_time - last_command_time >= navigation_command_interval:
                 if navigation_direction == 1:
                     success = robot_forward_enhanced()
@@ -549,54 +620,46 @@ def navigation_cycle_improved():
                 else:
                     print(f"Command refresh failed for {direction_name} movement")
             
-            # Monitor movement progress (if GPS/fusion data available)
             if initial_lat is not None and initial_lon is not None:
                 try:
                     current_distance = distance_meters(initial_lat, initial_lon, 
                                                      fusion_state.lat, fusion_state.lon)
-                    if current_distance > 0.5:  # If we've moved more than 50cm
+                    if current_distance > 0.5:
                         if not movement_confirmed:
                             print(f"Movement confirmed: {current_distance:.2f}m traveled")
                             movement_confirmed = True
                 except:
-                    pass  # GPS data might not be available
+                    pass
             
-            time.sleep(0.2)  # Check every 200ms
+            time.sleep(0.2)
         
-        # Check if navigation is still active before continuing
         if not navigation_active:
             break
         
-        # Enhanced stopping sequence
         print(f"Stopping {direction_name} movement")
         robot_stop_enhanced()
         
-        # Pause between direction changes with safety checks
         pause_start = time.time()
-        while navigation_active and (time.time() - pause_start) < 1.0:  # 1 second pause
+        while navigation_active and (time.time() - pause_start) < 1.0:
             time.sleep(0.1)
         
         if not navigation_active:
             break
         
-        # Switch direction
         navigation_direction *= -1
         new_direction = "Forward" if navigation_direction == 1 else "Backward"
         print(f"Navigation: Switching to {new_direction}")
     
-    # Final stop when navigation ends
     print("Navigation cycle ending - sending final stop commands")
     robot_stop_enhanced()
 
 def start_navigation_improved():
-    """Start improved navigation with better initialization"""
     global navigation_active, navigation_thread
     
     if navigation_active:
         print("Navigation already active")
         return False
     
-    # Check robot connection first
     if not robot.sock:
         print("Robot not connected, attempting to connect...")
         if not robot.connect():
@@ -610,7 +673,6 @@ def start_navigation_improved():
     return True
 
 def stop_navigation_improved():
-    """Stop navigation with proper cleanup"""
     global navigation_active
     
     if not navigation_active:
@@ -620,10 +682,8 @@ def stop_navigation_improved():
     print("Stopping navigation mode")
     navigation_active = False
     
-    # Send immediate stop commands
     robot_stop_enhanced()
     
-    # Wait a moment for thread to finish
     if navigation_thread and navigation_thread.is_alive():
         navigation_thread.join(timeout=2.0)
     
@@ -631,28 +691,23 @@ def stop_navigation_improved():
     return True
 
 def auto_stop_monitor():
-    """Monitor for lack of movement commands and send stop commands"""
     global stop_thread_active, last_movement_time
     
     while stop_thread_active:
         current_time = time.time()
         time_since_movement = current_time - last_movement_time
         
-        # If no movement commands for stop_timeout duration, send stop commands
         if time_since_movement > stop_timeout and last_movement_time > 0:
             print("No movement commands detected, sending stop commands...")
-            # Send multiple stop commands to ensure robot stops
             for i in range(3):
                 robot_stop()
-                time.sleep(0.05)  # Small delay between stop commands
+                time.sleep(0.05)
             
-            # Reset to prevent continuous stopping
             last_movement_time = 0
         
-        time.sleep(0.1)  # Check every 100ms
+        time.sleep(0.1)
 
 def start_auto_stop_monitor():
-    """Start the auto-stop monitoring thread"""
     global stop_thread, stop_thread_active
     if not stop_thread_active:
         stop_thread_active = True
@@ -683,21 +738,17 @@ def connect_robot():
 def robot_cmd():
     global last_command_time, last_movement_time
     
-    # Rate limiting: check if enough time has passed since last command
     current_time = time.time()
     time_since_last = current_time - last_command_time
     
     if time_since_last < command_delay:
-        # Too soon, ignore this command to prevent backlog
         return jsonify({'success': True, 'throttled': True})
     
-    # Update last command time
     last_command_time = current_time
     
     data = request.json
     cmd = data.get('cmd', '').lower()
     
-    # Track movement commands (not stop commands)
     if cmd in ['w', 's', 'a', 'd']:
         last_movement_time = current_time
     
@@ -711,9 +762,8 @@ def robot_cmd():
         robot_right()
     elif cmd == 'stop':
         robot_stop()
-        # Reset movement time when explicit stop is sent
         last_movement_time = 0
-    elif cmd == 'n':  # Navigate command - IMPROVED
+    elif cmd == 'n':
         if navigation_active:
             success = stop_navigation_improved()
         else:
@@ -775,10 +825,8 @@ def pid_update():
         "nav": navigation_cycle_time
     })
 
-# NEW: Navigation configuration endpoints
 @app.route('/navigation-config', methods=['POST'])
 def update_navigation_config():
-    """Update navigation configuration parameters"""
     global navigation_cycle_time, navigation_command_interval, navigation_max_speed, navigation_min_speed
     
     data = request.get_json() or {}
@@ -807,7 +855,6 @@ def update_navigation_config():
 
 @app.route('/navigation-config', methods=['GET'])
 def get_navigation_config():
-    """Get current navigation configuration"""
     return jsonify({
         'cycle_time': navigation_cycle_time,
         'command_interval': navigation_command_interval,
@@ -849,26 +896,21 @@ def toggle_camera():
     
     return jsonify({'success': False, 'error': 'Invalid action'})
 
-# NEW: Photo capture endpoint
 @app.route('/capture-photo', methods=['POST'])
 def capture_photo():
-    """Capture a photo from the current camera frame and save it locally"""
     global latest_frame
     
     if latest_frame is None:
         return jsonify({'success': False, 'error': 'No camera frame available'})
     
     try:
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'photo_{timestamp}.jpg'
         filepath = os.path.join(PHOTOS_DIR, filename)
         
-        # Save the current frame
         success = cv2.imwrite(filepath, latest_frame)
         
         if success:
-            # Get file size
             file_size = os.path.getsize(filepath)
             
             print(f"Photo captured: {filename} ({file_size} bytes)")
@@ -887,10 +929,8 @@ def capture_photo():
         print(f"Error capturing photo: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-# NEW: List captured photos
 @app.route('/photos', methods=['GET'])
 def list_photos():
-    """List all captured photos"""
     try:
         photos = []
         if os.path.exists(PHOTOS_DIR):
@@ -913,14 +953,11 @@ def list_photos():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-# NEW: Delete a photo
 @app.route('/delete-photo/<filename>', methods=['DELETE'])
 def delete_photo(filename):
-    """Delete a specific photo"""
     try:
         filepath = os.path.join(PHOTOS_DIR, filename)
         
-        # Security check: ensure filename doesn't contain path traversal
         if '..' in filename or '/' in filename or '\\' in filename:
             return jsonify({'success': False, 'error': 'Invalid filename'})
         
@@ -935,7 +972,105 @@ def delete_photo(filename):
         print(f"Error deleting photo: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/start-logging', methods=['POST'])
+def start_logging():
+    success, filename = start_data_logging()
+    if success:
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'message': 'Data logging started'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to start data logging'
+        })
+
+@app.route('/stop-logging', methods=['POST'])
+def stop_logging():
+    success = stop_data_logging()
+    return jsonify({
+        'success': success,
+        'message': 'Data logging stopped' if success else 'Failed to stop logging'
+    })
+
+@app.route('/logging-status')
+def logging_status():
+    return jsonify({
+        'active': data_logging_active,
+        'interval': data_log_interval,
+        'buffer_size': len(data_log_buffer)
+    })
+
+@app.route('/sensor-logs', methods=['GET'])
+def list_sensor_logs():
+    try:
+        logs = []
+        if os.path.exists(DATA_LOGS_DIR):
+            for filename in sorted(os.listdir(DATA_LOGS_DIR), reverse=True):
+                if filename.endswith('.csv'):
+                    filepath = os.path.join(DATA_LOGS_DIR, filename)
+                    file_size = os.path.getsize(filepath)
+                    file_time = os.path.getmtime(filepath)
+                    
+                    try:
+                        with open(filepath, 'r') as f:
+                            row_count = sum(1 for line in f) - 1
+                    except:
+                        row_count = 0
+                    
+                    logs.append({
+                        'filename': filename,
+                        'size': file_size,
+                        'rows': row_count,
+                        'timestamp': datetime.fromtimestamp(file_time).strftime('%Y-%m-%d %H:%M:%S')
+                    })
+        
+        return jsonify({
+            'success': True,
+            'logs': logs,
+            'count': len(logs)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/delete-log/<filename>', methods=['DELETE'])
+def delete_log(filename):
+    try:
+        filepath = os.path.join(DATA_LOGS_DIR, filename)
+        
+        if '..' in filename or '/' in filename or '\\' in filename:
+            return jsonify({'success': False, 'error': 'Invalid filename'})
+        
+        if os.path.exists(filepath) and filename.endswith('.csv'):
+            os.remove(filepath)
+            print(f"Log file deleted: {filename}")
+            return jsonify({'success': True, 'message': f'Deleted {filename}'})
+        else:
+            return jsonify({'success': False, 'error': 'Log file not found'})
+            
+    except Exception as e:
+        print(f"Error deleting log file: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/download-log/<filename>')
+def download_log(filename):
+    try:
+        if '..' in filename or '/' in filename or '\\' in filename:
+            return jsonify({'success': False, 'error': 'Invalid filename'})
+        
+        filepath = os.path.join(DATA_LOGS_DIR, filename)
+        
+        if os.path.exists(filepath) and filename.endswith('.csv'):
+            return send_file(filepath, as_attachment=True, download_name=filename)
+        else:
+            return jsonify({'success': False, 'error': 'Log file not found'})
+            
+    except Exception as e:
+        print(f"Error downloading log file: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
 if __name__ == '__main__':
-    # Start the auto-stop monitor
     start_auto_stop_monitor()
     app.run(host='0.0.0.0', port=5014, debug=True)
