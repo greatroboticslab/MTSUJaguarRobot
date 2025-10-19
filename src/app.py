@@ -92,12 +92,7 @@ def stop_camera():
     if camera_cap:
         camera_cap.release()
         camera_cap = None
-def auto_capture_photos(interval = 2):
-	while True:
-		save_current_frame()
-		time.sleep(interval)
-capture_thread = threading.Thread(target = auto_capture_photos, daemon = True)
-capture_thread.start()
+
 # Simple PID parameter storage
 class PIDParams:
     def __init__(self):
@@ -854,41 +849,43 @@ def toggle_camera():
     
     return jsonify({'success': False, 'error': 'Invalid action'})
 
-def save_current_frame():
+# NEW: Photo capture endpoint
+@app.route('/capture-photo', methods=['POST'])
+def capture_photo():
+    """Capture a photo from the current camera frame and save it locally"""
     global latest_frame
-
+    
     if latest_frame is None:
-        return {'success': False, 'error': 'No camera frame available'}
+        return jsonify({'success': False, 'error': 'No camera frame available'})
     
     try:
+        # Generate filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'photo_{timestamp}.jpg'
         filepath = os.path.join(PHOTOS_DIR, filename)
+        
+        # Save the current frame
         success = cv2.imwrite(filepath, latest_frame)
         
         if success:
+            # Get file size
             file_size = os.path.getsize(filepath)
+            
             print(f"Photo captured: {filename} ({file_size} bytes)")
-            return {
+            
+            return jsonify({
                 'success': True,
                 'filename': filename,
                 'filepath': filepath,
                 'size': file_size,
                 'timestamp': timestamp
-            }
+            })
         else:
-            return {'success': False, 'error': 'Failed to save image'}
+            return jsonify({'success': False, 'error': 'Failed to save image'})
+            
     except Exception as e:
         print(f"Error capturing photo: {e}")
-        return {'success': False, 'error': str(e)}
-
-
-# NEW: Photo capture endpoint
-
-@app.route('/capture-photo', methods=['POST'])
-def capture_photo():
-    result = save_current_frame()
-    return jsonify(result)
+        return jsonify({'success': False, 'error': str(e)})
 
 # NEW: List captured photos
 @app.route('/photos', methods=['GET'])
