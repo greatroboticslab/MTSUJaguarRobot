@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request, Response, send_file
+from flask import Flask, render_template, jsonify, request, Response
 import paho.mqtt.client as mqtt
 import json
 import threading
@@ -8,9 +8,9 @@ import math
 import time
 import cv2
 import os
-from datetime import datetime
 import csv
-from collections import deque
+from datetime import datetime
+from pathlib import Path
 
 app = Flask(__name__)
 
@@ -19,20 +19,34 @@ PHOTOS_DIR = 'captured_photos'
 if not os.path.exists(PHOTOS_DIR):
     os.makedirs(PHOTOS_DIR)
 
-# Data logging variables
-data_logging_active = False
-data_log_file = None
-data_log_writer = None
-data_log_buffer = deque(maxlen=100)
-data_log_interval = 0.5
-last_log_time = 0
-DATA_LOGS_DIR = 'sensor_logs'
+# Create sensor logs directory on Desktop
+DESKTOP_PATH = str(Path.home() / 'Desktop')
+SENSOR_LOGS_DIR = os.path.join(DESKTOP_PATH, 'sensor_logs')
+if not os.path.exists(SENSOR_LOGS_DIR):
+    os.makedirs(SENSOR_LOGS_DIR)
 
-# Create logs directory if it doesn't exist
-if not os.path.exists(DATA_LOGS_DIR):
-    os.makedirs(DATA_LOGS_DIR)
+# Create CSV files for logging
+SENSOR_LOG_FILE = os.path.join(SENSOR_LOGS_DIR, f'sensor_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
+CSV_HEADERS = ['timestamp', 'source', 'latitude', 'longitude', 'altitude', 'heading', 'roll', 'pitch',
+               'velocity', 'est_x', 'est_y', 'est_z', 'fix_type', 'satellites', 'accel_x', 'accel_y', 'accel_z']
 
-# ------------------ Global Storage for Data ------------------ #
+# Initialize CSV file with headers
+with open(SENSOR_LOG_FILE, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(CSV_HEADERS)
+
+print(f"Sensor logs will be saved to: {SENSOR_LOG_FILE}")
+
+# Global sensor data storage
+sensor_data_lock = threading.Lock()
+sensor_data = {
+    'position': None,  # From Pi tracker
+    'imu': None,       # Raw IMU data
+    'gps': None,       # Raw GPS data
+    'fused': None      # Fused navigation data
+}
+
+# Original global storage
 current_data = {
     'imu': None,
     'gps': None,
@@ -49,19 +63,16 @@ current_data = {
     }
 }
 
-# Latest camera frame
 latest_frame = None
 mqtt_received_data = []
 data_queue = queue.Queue()
 mqtt_connected = False
 
-# Camera variables
 camera_url = "http://root:drrobot@192.168.0.65:8081/axis-cgi/mjpg/video.cgi"
 camera_cap = None
 camera_thread = None
 camera_running = False
 
-# Navigation mode variables
 navigation_active = False
 navigation_thread = None
 navigation_direction = 1
@@ -71,15 +82,44 @@ navigation_ramp_time = 1.0
 navigation_max_speed = None
 navigation_min_speed = 50
 
-# Command rate limiting variables
 last_command_time = 0
 command_delay = 0.1
 
-# Stop command variables
 last_movement_time = 0
 stop_timeout = 0.3
 stop_thread = None
 stop_thread_active = False
+
+# -------------------- SENSOR LOGGING FUNCTIONS -------------------- #
+
+def log_sensor_data(data_dict):
+    """Log sensor data to CSV file"""
+    try:
+        with open(SENSOR_LOG_FILE, 'a', newline='') as f:
+            writer = csv.writer(f)
+            
+            row = [
+                data_dict.get('timestamp', datetime.now().isoformat()),
+                data_dict.get('source', 'unknown'),
+                data_dict.get('latitude', ''),
+                data_dict.get('longitude', ''),
+                data_dict.get('altitude', ''),
+                data_dict.get('heading', ''),
+                data_dict.get('roll', ''),
+                data_dict.get('pitch', ''),
+                data_dict.get('velocity', ''),
+                data_dict.get('est_x', ''),
+                data_dict.get('est_y', ''),
+                data_dict.get('est_z', ''),
+                data_dict.get('fix_type', ''),
+                data_dict.get('satellites', ''),
+                data_dict.get('accel_x', ''),
+                data_dict.get('accel_y', ''),
+                data_dict.get('accel_z', '')
+            ]
+            writer.writerow(row)
+    except Exception as e:
+        print(f"Error logging sensor data: {e}")
 
 def camera_stream():
     global camera_cap, camera_running, latest_frame
@@ -108,7 +148,6 @@ def stop_camera():
         camera_cap.release()
         camera_cap = None
 
-# Simple PID parameter storage
 class PIDParams:
     def __init__(self):
         self.kp = 1.0
@@ -118,7 +157,6 @@ class PIDParams:
 
 pid_params = PIDParams()
 
-# ------------------ Extended FusionState ------------------ #
 class FusionState:
     def __init__(self):
         self.lat = 0.0
@@ -138,12 +176,13 @@ class FusionState:
 
 fusion_state = FusionState()
 
-# thresholds
-GPS_NOISE_THRESHOLD   = 2
-STATIC_ACC_THRESHOLD  = 100.0
-DIRECTION_DIFF_MAX    = 10.0
-MIN_DISTANCE_CORRECT  = 5.0
-MAX_TRUST_DISTANCE    = 100.0
+GPS_NOISE_THRESHOLD = 2
+STATIC_ACC_THRESHOLD = 100.0
+DIRECTION_DIFF_MAX = 10.0
+MIN_DISTANCE_CORRECT = 5.0
+MAX_TRUST_DISTANCE = 100.0
+
+# -------------------- MQTT CALLBACKS -------------------- #
 
 def on_connect(client, userdata, flags, rc):
     global mqtt_connected
@@ -151,22 +190,83 @@ def on_connect(client, userdata, flags, rc):
         print("Connected to MQTT broker with result code", rc)
         mqtt_connected = True
         client.subscribe([
+            ("jaguar/position", 0),  # Subscribe to Pi position tracker
+            ("jaguar/imu", 0),       # Subscribe to Pi IMU data
+            ("jaguar/gps", 0),       # Subscribe to Pi GPS data
             ("IMU/data", 0),
             ("CAMERA/tracking", 0),
             ("camera/detections", 0),
             ("camera/frame", 0)
         ])
+        print("Subscribed to sensor topics")
     else:
         print(f"Failed to connect to MQTT broker with result code {rc}")
         mqtt_connected = False
 
 def on_message(client, userdata, msg):
+    global sensor_data, current_data
+    
     try:
         data = json.loads(msg.payload.decode())
         mqtt_received_data.append(data)
         if len(mqtt_received_data) > 40:
             mqtt_received_data.pop(0)
+        
+        # Route data based on topic
+        topic = msg.topic
+        
+        with sensor_data_lock:
+            if topic == "jaguar/position":
+                # Position data from Pi tracker
+                sensor_data['position'] = data
+                log_entry = {
+                    'timestamp': data.get('t', datetime.now().isoformat()),
+                    'source': 'pi_tracker',
+                    'latitude': data.get('lat'),
+                    'longitude': data.get('lon'),
+                    'altitude': data.get('alt'),
+                    'heading': data.get('h'),
+                    'velocity': data.get('v'),
+                    'est_x': data.get('x'),
+                    'est_y': data.get('y'),
+                    'fix_type': data.get('fix'),
+                    'satellites': data.get('sats')
+                }
+                log_sensor_data(log_entry)
+                print(f"Position update: X={data.get('x'):.2f}m Y={data.get('y'):.2f}m")
+            
+            elif topic == "jaguar/imu":
+                # IMU data from Pi
+                sensor_data['imu'] = data
+                log_entry = {
+                    'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                    'source': 'pi_imu',
+                    'heading': data.get('euler', {}).get('heading'),
+                    'roll': data.get('euler', {}).get('roll'),
+                    'pitch': data.get('euler', {}).get('pitch'),
+                    'accel_x': data.get('accel', {}).get('x'),
+                    'accel_y': data.get('accel', {}).get('y'),
+                    'accel_z': data.get('accel', {}).get('z')
+                }
+                log_sensor_data(log_entry)
+            
+            elif topic == "jaguar/gps":
+                # GPS data from Pi
+                sensor_data['gps'] = data
+                log_entry = {
+                    'timestamp': data.get('timestamp', datetime.now().isoformat()),
+                    'source': 'pi_gps',
+                    'latitude': data.get('latitude'),
+                    'longitude': data.get('longitude'),
+                    'altitude': data.get('altitude'),
+                    'fix_type': data.get('fix_type'),
+                    'satellites': data.get('satellites')
+                }
+                log_sensor_data(log_entry)
+        
+        # Keep data_queue for legacy processing
         data_queue.put(data)
+        
     except Exception as e:
         print(f"Error processing message: {e}")
 
@@ -192,10 +292,10 @@ def process_data():
         try:
             raw = data_queue.get()
             imu_heading = float(raw.get('Heading', 0.0))
-            imu_accX    = float(raw.get('accX', 0.0))
-            imu_accY    = float(raw.get('accY', 0.0))
-            gps_lat     = float(raw.get('gps:Lat', 0.0))
-            gps_lon     = float(raw.get('Lon', 0.0))
+            imu_accX = float(raw.get('accX', 0.0))
+            imu_accY = float(raw.get('accY', 0.0))
+            gps_lat = float(raw.get('gps:Lat', 0.0))
+            gps_lon = float(raw.get('Lon', 0.0))
 
             new_imu = {
                 'heading': imu_heading,
@@ -288,132 +388,14 @@ def process_data():
             }
             global current_data
             current_data = {
-                'imu': {
-                    'heading': imu_heading,
-                    'accX': imu_accX,
-                    'accY': imu_accY
-                },
-                'gps': {
-                    'lat': gps_lat,
-                    'lon': gps_lon
-                },
+                'imu': new_imu,
+                'gps': new_gps,
                 'fused': fused_dict
             }
 
         except Exception as e:
             print("Error in data processing:", e)
 
-def log_sensor_data():
-    """Log IMU and GPS data to CSV file"""
-    global data_log_file, data_log_writer, last_log_time
-    
-    while data_logging_active:
-        current_time = time.time()
-        
-        if current_time - last_log_time >= data_log_interval:
-            try:
-                if current_data['imu'] and current_data['gps']:
-                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                    
-                    data_row = {
-                        'timestamp': timestamp,
-                        'unix_time': current_time,
-                        'gps_lat': current_data['gps']['lat'],
-                        'gps_lon': current_data['gps']['lon'],
-                        'imu_heading': current_data['imu']['heading'],
-                        'imu_accX': current_data['imu']['accX'],
-                        'imu_accY': current_data['imu']['accY'],
-                    }
-                    
-                    if current_data.get('fused'):
-                        data_row['fused_lat'] = current_data['fused']['lat']
-                        data_row['fused_lon'] = current_data['fused']['lon']
-                        data_row['fused_heading'] = current_data['fused']['heading']
-                    
-                    data_log_buffer.append(data_row)
-                    
-                    if data_log_writer and len(data_log_buffer) > 0:
-                        while len(data_log_buffer) > 0:
-                            row = data_log_buffer.popleft()
-                            data_log_writer.writerow(row)
-                        data_log_file.flush()
-                    
-                    last_log_time = current_time
-                    
-            except Exception as e:
-                print(f"Error logging sensor data: {e}")
-        
-        time.sleep(0.1)
-
-def start_data_logging():
-    """Start logging sensor data to a new CSV file"""
-    global data_logging_active, data_log_file, data_log_writer, last_log_time
-    
-    if data_logging_active:
-        print("Data logging already active")
-        return False, None
-    
-    try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'sensor_log_{timestamp}.csv'
-        filepath = os.path.join(DATA_LOGS_DIR, filename)
-        
-        data_log_file = open(filepath, 'w', newline='')
-        
-        fieldnames = [
-            'timestamp', 'unix_time',
-            'gps_lat', 'gps_lon',
-            'imu_heading', 'imu_accX', 'imu_accY',
-            'fused_lat', 'fused_lon', 'fused_heading'
-        ]
-        
-        data_log_writer = csv.DictWriter(data_log_file, fieldnames=fieldnames)
-        data_log_writer.writeheader()
-        data_log_file.flush()
-        
-        data_logging_active = True
-        last_log_time = time.time()
-        
-        log_thread = threading.Thread(target=log_sensor_data, daemon=True)
-        log_thread.start()
-        
-        print(f"Started data logging to: {filename}")
-        return True, filename
-        
-    except Exception as e:
-        print(f"Error starting data logging: {e}")
-        return False, None
-
-def stop_data_logging():
-    """Stop logging sensor data and close the file"""
-    global data_logging_active, data_log_file, data_log_writer
-    
-    if not data_logging_active:
-        print("Data logging not active")
-        return False
-    
-    try:
-        data_logging_active = False
-        
-        if data_log_writer and len(data_log_buffer) > 0:
-            while len(data_log_buffer) > 0:
-                row = data_log_buffer.popleft()
-                data_log_writer.writerow(row)
-        
-        if data_log_file:
-            data_log_file.flush()
-            data_log_file.close()
-            data_log_file = None
-            data_log_writer = None
-        
-        print("Data logging stopped")
-        return True
-        
-    except Exception as e:
-        print(f"Error stopping data logging: {e}")
-        return False
-
-# Initialize MQTT client
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
@@ -436,7 +418,6 @@ def mqtt_connect_with_retry():
     try:
         mqtt_client.on_connect = on_mqtt_connect_fail
         mqtt_client.connect(mqtt_broker_ip, mqtt_broker_port, 60)
-        
         mqtt_client.on_connect = on_connect
         print(f"Connected to MQTT broker at {mqtt_broker_ip}:{mqtt_broker_port}")
         mqtt_reconnect_delay = 1
@@ -455,7 +436,8 @@ process_thread.start()
 mqtt_thread = threading.Thread(target=mqtt_connect_with_retry, daemon=True)
 mqtt_thread.start()
 
-# ------------------ Robot Socket Class & Movement Commands ------------------ #
+# -------------------- ROBOT SOCKET & MOVEMENT -------------------- #
+
 class RobotSocket:
     def __init__(self, ip, port):
         self.ip = ip
@@ -508,14 +490,11 @@ def robot_forward_enhanced():
     try:
         result1 = robot.send_command("MMW !MG")
         time.sleep(0.05)
-        
         current_speed = fusion_state.turn_override_speed if fusion_state.turn_override_speed else pid_params.speed
         if navigation_max_speed:
             current_speed = min(current_speed, navigation_max_speed)
         current_speed = max(current_speed, navigation_min_speed)
-        
         result2 = robot.send_command(f"MMW !M {current_speed} -{current_speed}")
-        
         if result1 is None or result2 is None:
             print("Warning: Forward command may not have been received properly")
             return False
@@ -528,14 +507,11 @@ def robot_backward_enhanced():
     try:
         result1 = robot.send_command("MMW !MG")
         time.sleep(0.05)
-        
         current_speed = fusion_state.turn_override_speed if fusion_state.turn_override_speed else pid_params.speed
         if navigation_max_speed:
             current_speed = min(current_speed, navigation_max_speed)
         current_speed = max(current_speed, navigation_min_speed)
-        
         result2 = robot.send_command(f"MMW !M -{current_speed} {current_speed}")
-        
         if result1 is None or result2 is None:
             print("Warning: Backward command may not have been received properly")
             return False
@@ -581,7 +557,6 @@ def robot_stop():
 
 def navigation_cycle_improved():
     global navigation_active, navigation_direction
-    
     print("Starting improved navigation cycle")
     
     while navigation_active:
@@ -681,7 +656,6 @@ def stop_navigation_improved():
     
     print("Stopping navigation mode")
     navigation_active = False
-    
     robot_stop_enhanced()
     
     if navigation_thread and navigation_thread.is_alive():
@@ -702,7 +676,6 @@ def auto_stop_monitor():
             for i in range(3):
                 robot_stop()
                 time.sleep(0.05)
-            
             last_movement_time = 0
         
         time.sleep(0.1)
@@ -715,7 +688,7 @@ def start_auto_stop_monitor():
         stop_thread.start()
         print("Auto-stop monitor started")
 
-# ------------------ FLASK ROUTES ------------------ #
+# -------------------- FLASK ROUTES -------------------- #
 
 @app.route('/')
 def index():
@@ -723,7 +696,40 @@ def index():
 
 @app.route('/data')
 def get_data():
-    return jsonify(current_data)
+    with sensor_data_lock:
+        return jsonify({
+            'pi_tracker': sensor_data.get('position'),
+            'pi_imu': sensor_data.get('imu'),
+            'pi_gps': sensor_data.get('gps'),
+            'legacy': current_data
+        })
+
+@app.route('/sensor-logs')
+def get_sensor_logs():
+    """Get list of sensor log files and path"""
+    try:
+        files = []
+        if os.path.exists(SENSOR_LOGS_DIR):
+            for filename in sorted(os.listdir(SENSOR_LOGS_DIR), reverse=True):
+                if filename.endswith('.csv'):
+                    filepath = os.path.join(SENSOR_LOGS_DIR, filename)
+                    file_size = os.path.getsize(filepath)
+                    file_time = os.path.getmtime(filepath)
+                    files.append({
+                        'filename': filename,
+                        'size': file_size,
+                        'path': filepath,
+                        'timestamp': datetime.fromtimestamp(file_time).strftime('%Y-%m-%d %H:%M:%S')
+                    })
+        
+        return jsonify({
+            'success': True,
+            'logs': files,
+            'directory': SENSOR_LOGS_DIR,
+            'count': len(files)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/mqtt-data')
 def get_mqtt_data():
@@ -827,6 +833,7 @@ def pid_update():
 
 @app.route('/navigation-config', methods=['POST'])
 def update_navigation_config():
+    """Update navigation configuration parameters"""
     global navigation_cycle_time, navigation_command_interval, navigation_max_speed, navigation_min_speed
     
     data = request.get_json() or {}
@@ -855,6 +862,7 @@ def update_navigation_config():
 
 @app.route('/navigation-config', methods=['GET'])
 def get_navigation_config():
+    """Get current navigation configuration"""
     return jsonify({
         'cycle_time': navigation_cycle_time,
         'command_interval': navigation_command_interval,
@@ -898,6 +906,7 @@ def toggle_camera():
 
 @app.route('/capture-photo', methods=['POST'])
 def capture_photo():
+    """Capture a photo from the current camera frame and save it locally"""
     global latest_frame
     
     if latest_frame is None:
@@ -912,7 +921,6 @@ def capture_photo():
         
         if success:
             file_size = os.path.getsize(filepath)
-            
             print(f"Photo captured: {filename} ({file_size} bytes)")
             
             return jsonify({
@@ -931,6 +939,7 @@ def capture_photo():
 
 @app.route('/photos', methods=['GET'])
 def list_photos():
+    """List all captured photos"""
     try:
         photos = []
         if os.path.exists(PHOTOS_DIR):
@@ -955,6 +964,7 @@ def list_photos():
 
 @app.route('/delete-photo/<filename>', methods=['DELETE'])
 def delete_photo(filename):
+    """Delete a specific photo"""
     try:
         filepath = os.path.join(PHOTOS_DIR, filename)
         
@@ -972,105 +982,12 @@ def delete_photo(filename):
         print(f"Error deleting photo: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/start-logging', methods=['POST'])
-def start_logging():
-    success, filename = start_data_logging()
-    if success:
-        return jsonify({
-            'success': True,
-            'filename': filename,
-            'message': 'Data logging started'
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'error': 'Failed to start data logging'
-        })
-
-@app.route('/stop-logging', methods=['POST'])
-def stop_logging():
-    success = stop_data_logging()
-    return jsonify({
-        'success': success,
-        'message': 'Data logging stopped' if success else 'Failed to stop logging'
-    })
-
-@app.route('/logging-status')
-def logging_status():
-    return jsonify({
-        'active': data_logging_active,
-        'interval': data_log_interval,
-        'buffer_size': len(data_log_buffer)
-    })
-
-@app.route('/sensor-logs', methods=['GET'])
-def list_sensor_logs():
-    try:
-        logs = []
-        if os.path.exists(DATA_LOGS_DIR):
-            for filename in sorted(os.listdir(DATA_LOGS_DIR), reverse=True):
-                if filename.endswith('.csv'):
-                    filepath = os.path.join(DATA_LOGS_DIR, filename)
-                    file_size = os.path.getsize(filepath)
-                    file_time = os.path.getmtime(filepath)
-                    
-                    try:
-                        with open(filepath, 'r') as f:
-                            row_count = sum(1 for line in f) - 1
-                    except:
-                        row_count = 0
-                    
-                    logs.append({
-                        'filename': filename,
-                        'size': file_size,
-                        'rows': row_count,
-                        'timestamp': datetime.fromtimestamp(file_time).strftime('%Y-%m-%d %H:%M:%S')
-                    })
-        
-        return jsonify({
-            'success': True,
-            'logs': logs,
-            'count': len(logs)
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/delete-log/<filename>', methods=['DELETE'])
-def delete_log(filename):
-    try:
-        filepath = os.path.join(DATA_LOGS_DIR, filename)
-        
-        if '..' in filename or '/' in filename or '\\' in filename:
-            return jsonify({'success': False, 'error': 'Invalid filename'})
-        
-        if os.path.exists(filepath) and filename.endswith('.csv'):
-            os.remove(filepath)
-            print(f"Log file deleted: {filename}")
-            return jsonify({'success': True, 'message': f'Deleted {filename}'})
-        else:
-            return jsonify({'success': False, 'error': 'Log file not found'})
-            
-    except Exception as e:
-        print(f"Error deleting log file: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/download-log/<filename>')
-def download_log(filename):
-    try:
-        if '..' in filename or '/' in filename or '\\' in filename:
-            return jsonify({'success': False, 'error': 'Invalid filename'})
-        
-        filepath = os.path.join(DATA_LOGS_DIR, filename)
-        
-        if os.path.exists(filepath) and filename.endswith('.csv'):
-            return send_file(filepath, as_attachment=True, download_name=filename)
-        else:
-            return jsonify({'success': False, 'error': 'Log file not found'})
-            
-    except Exception as e:
-        print(f"Error downloading log file: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
 if __name__ == '__main__':
     start_auto_stop_monitor()
+    print(f"\n{'='*60}")
+    print("Jaguar Control Server Started")
+    print(f"{'='*60}")
+    print(f"Sensor logs directory: {SENSOR_LOGS_DIR}")
+    print(f"Current log file: {SENSOR_LOG_FILE}")
+    print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=5014, debug=True)
