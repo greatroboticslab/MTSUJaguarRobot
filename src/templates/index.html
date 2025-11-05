@@ -185,9 +185,17 @@
         #capture-btn:hover {
             background: #138496;
         }
+        #capture-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.65;
+        }
         #capture-btn.capturing {
             background: #ffc107;
-            pointer-events: none;
+            color: #000;
+        }
+        #capture-btn.capturing:hover {
+            background: #e0a800;
         }
         #camera-view {
             position: absolute;
@@ -382,6 +390,10 @@
 
         // route interpolation
         let routeCheckpoints = [];
+
+        // AUTO-CAPTURE STATE - Fixed
+        let isCapturing = false;
+        let captureInterval = null;
 
         // offline grid
         const OfflineGridLayer = L.GridLayer.extend({
@@ -748,6 +760,10 @@
             cameraView.style.display = 'none';
             cameraBtn.classList.remove('active');
             cameraClose.classList.add('active');
+            // Stop capturing when closing camera
+            if (isCapturing) {
+                stopCapturePhoto();
+            }
             fetch('/toggle-camera', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -755,52 +771,58 @@
             });
         });
 
-        // Photo capture button
-        captureBtn.addEventListener('click', ()=>{
-            capturePhoto();
+        // FIXED: Photo capture button - Better state management
+        captureBtn.addEventListener('click', () => {
+            if (!isCapturing) {
+                startCapturePhoto();
+            } else {
+                stopCapturePhoto();
+            }
         });
 
-    let isCapturing = false;
-	let captureInterval = null;
+        function startCapturePhoto() {
+            isCapturing = true;
+            captureBtn.classList.add('capturing');
+            captureBtn.textContent = 'Stop Capturing';
+            
+            console.log('Starting auto-capture...');
+            
+            // Capture immediately, then every 3 seconds
+            captureOnce();
+            captureInterval = setInterval(captureOnce, 3000);
+        }
 
-	function capturePhoto() {
-    		if (!isCapturing) {
-        	// Start capturing
-        	isCapturing = true;
-        	captureBtn.classList.add('capturing');
-        	captureBtn.textContent = 'Stop Capturing';
+        function stopCapturePhoto() {
+            isCapturing = false;
+            
+            if (captureInterval !== null) {
+                clearInterval(captureInterval);
+                captureInterval = null;
+            }
+            
+            captureBtn.classList.remove('capturing');
+            captureBtn.textContent = 'Photo';
+            
+            console.log('Stopped auto-capture');
+        }
 
-        	// Start interval to capture photos repeatedly
-        	captureInterval = setInterval(() => {
-            	fetch('/capture-photo', {
+        function captureOnce() {
+            fetch('/capture-photo', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'}
             })
-            	.then(r => r.json())
-            	.then(data => {
-                	if (data.success) {
-                    	console.log('Photo saved:', data.filepath);
-                	} else {
-                    	alert(`Failed to capture photo: ${data.error}`);
-                    	console.error('Photo capture error:', data.error);
-                	}
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Photo saved:', data.filename);
+                } else {
+                    console.error('Photo capture error:', data.error);
+                }
             })
-            	.catch(error => {
-                	alert('Error capturing photo: ' + error.message);
-                	console.error('Photo capture error:', error);
-            		});
-        }, 3000); // Capture every 3 seconds (adjust as needed)
-
-    } else {
-        // Stop capturing
-        isCapturing = false;
-        clearInterval(captureInterval);
-        captureInterval = null;
-        captureBtn.classList.remove('capturing');
-        captureBtn.textContent = 'Photo';
-    }
-}
-
+            .catch(error => {
+                console.error('Photo capture error:', error);
+            });
+        }
 
         // Lock heading button
         lockBtnElem.addEventListener('click', ()=>{
