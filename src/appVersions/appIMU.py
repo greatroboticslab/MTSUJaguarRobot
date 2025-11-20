@@ -346,7 +346,7 @@ mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 mqtt_reconnect_delay = 1
 mqtt_reconnect_max_delay = 60
-mqtt_broker_ip = "192.168.1.103"
+mqtt_broker_ip = "192.168.0.103"  # Jaguar MQTT broker
 mqtt_broker_port = 1883
 
 
