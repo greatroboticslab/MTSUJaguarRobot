@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi IMU/GPS Position Tracker with MQTT Publisher
-Sends IMU heading, acceleration, and GPS data to Jaguar controller
+Raspberry Pi IMU/GPS Position Tracker with MQTT Publisher (GPSD Version)
+Sends IMU heading, acceleration, and GPS data via GPSD to Jaguar controller
 Publishes to: IMU/data topic for Flask backend consumption
+
+SETUP:
+  sudo apt-get install gpsd gpsd-clients python3-gps3
+  sudo gpsd /dev/ttyACM0 -F /var/run/gpsd.sock
 """
 
 import json
@@ -22,69 +26,93 @@ except ImportError:
     print("Warning: BNO055 not available")
 
 try:
-    import serial
-    GPS_AVAILABLE = True
+    from gps3 import agps3
+    GPSD_AVAILABLE = True
 except ImportError:
-    GPS_AVAILABLE = False
-    print("Warning: pyserial not available")
+    GPSD_AVAILABLE = False
+    print("Warning: gps3 (GPSD) not available - install with: pip3 install gps3")
 
 # Constants
 EARTH_RADIUS = 6371000
 DEG_TO_RAD = math.pi / 180
 PUBLISH_INTERVAL = 0.2  # 5Hz publishing rate
-MQTT_BROKER = "192.168.1.103"  # Change to your broker IP
+MQTT_BROKER = "192.168.0.103"  # Change to your broker IP
 MQTT_PORT = 1883
 MQTT_TOPIC_IMU = "IMU/data"
-MQTT_TOPIC_GPS = "GPS/data"
 
-class GPSParser:
-    """Fast NMEA parser - processes GGA sentences for position data"""
-    def __init__(self):
+
+class GPSdaemon:
+    """GPSD client for GPS data via socket (non-blocking)"""
+    def __init__(self, host='127.0.0.1', port=2947):
+        self.host = host
+        self.port = port
         self.lat = 0.0
         self.lon = 0.0
         self.alt = 0.0
         self.sats = 0
         self.fix = 0
         self.last_valid = time.time()
+        self.socket = None
+        self.stream = None
+        self.connected = False
+        self._init_gpsd()
     
-    def parse(self, line):
-        """Parse GPGGA sentence: $GPGGA,time,lat,lat_dir,lon,lon_dir,fix,sats,hdop,alt,alt_unit"""
-        if not line.startswith("$GPGGA"):
+    def _init_gpsd(self):
+        """Initialize connection to GPSD daemon"""
+        if not GPSD_AVAILABLE:
+            return
+        
+        try:
+            self.socket = agps3.GPSDSocket()
+            self.stream = agps3.DataStream()
+            self.socket.connect()
+            self.socket.watch()
+            self.connected = True
+            print("✓ GPSD connection established")
+        except Exception as e:
+            print(f"✗ GPSD initialization failed: {e}")
+            self.connected = False
+    
+    def update(self):
+        """Non-blocking read from GPSD (don't call faster than 1Hz)"""
+        if not self.connected or not self.socket:
             return False
         
         try:
-            parts = line.split(',')
-            if len(parts) < 10:
-                return False
+            # Read one JSON packet with short timeout
+            for new_data in self.socket:
+                if new_data:
+                    self.stream.unpack(new_data)
+                    
+                    # Check for valid TPV (position) data
+                    if self.stream.TPV['mode'] >= 2:  # 2D or 3D fix
+                        self.lat = self.stream.TPV.get('lat', 0.0)
+                        self.lon = self.stream.TPV.get('lon', 0.0)
+                        self.alt = self.stream.TPV.get('alt', 0.0)
+                        self.fix = self.stream.TPV['mode']
+                        
+                        # Get satellite count from SKY data if available
+                        if hasattr(self.stream, 'SKY'):
+                            self.sats = self.stream.SKY.get('nSat', 0)
+                        
+                        self.last_valid = time.time()
+                        return True
             
-            # Check if we have valid fix and data
-            fix_quality = int(parts[6]) if parts[6] else 0
-            if fix_quality == 0:
-                return False
-            
-            # Parse latitude (DDMM.MMMMM format)
-            if parts[2] and parts[3]:
-                lat_val = float(parts[2])
-                self.lat = int(lat_val / 100) + (lat_val % 100) / 60
-                if parts[3] == 'S':
-                    self.lat = -self.lat
-            
-            # Parse longitude (DDDMM.MMMMM format)
-            if parts[4] and parts[5]:
-                lon_val = float(parts[4])
-                self.lon = int(lon_val / 100) + (lon_val % 100) / 60
-                if parts[5] == 'W':
-                    self.lon = -self.lon
-            
-            # Parse altitude and satellite count
-            self.alt = float(parts[9]) if parts[9] else 0.0
-            self.sats = int(parts[7]) if parts[7] else 0
-            self.fix = fix_quality
-            self.last_valid = time.time()
-            
-            return True
-        except (ValueError, IndexError) as e:
             return False
+        except Exception as e:
+            print(f"Error reading GPSD: {e}")
+            return False
+    
+    def get_data(self):
+        """Return current GPS data as dictionary"""
+        return {
+            'gps:Lat': round(self.lat, 8),
+            'Lat': round(self.lat, 8),
+            'Lon': round(self.lon, 8),
+            'Alt': round(self.alt, 2),
+            'Sats': self.sats,
+            'Fix': self.fix
+        }
 
 
 class IMUSensor:
@@ -152,63 +180,6 @@ class IMUSensor:
         }
 
 
-class GPSSensor:
-    """Interface to GPS module via serial"""
-    def __init__(self, port="/dev/ttyUSB0", baudrate=9600):
-        self.port = port
-        self.baudrate = baudrate
-        self.ser = None
-        self.parser = GPSParser()
-        self.connected = False
-        self._init_gps()
-    
-    def _init_gps(self):
-        """Initialize GPS serial connection"""
-        if not GPS_AVAILABLE:
-            return
-        
-        # Try multiple port configurations
-        ports = ["/dev/ttyUSB0", "/dev/ttyAMA0", "/dev/serial0"]
-        
-        for p in ports:
-            try:
-                self.ser = serial.Serial(p, self.baudrate, timeout=0.5)
-                self.connected = True
-                print(f"✓ GPS connected on {p}")
-                return
-            except Exception:
-                continue
-        
-        if not self.connected:
-            print("✗ GPS initialization failed on all ports")
-    
-    def update(self):
-        """Non-blocking read of GPS data"""
-        if not self.connected or not self.ser:
-            return False
-        
-        try:
-            while self.ser.in_waiting:
-                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                if line and self.parser.parse(line):
-                    return True
-        except Exception as e:
-            print(f"Error reading GPS: {e}")
-        
-        return False
-    
-    def get_data(self):
-        """Return current GPS data as dictionary"""
-        return {
-            'Lat': round(self.parser.lat, 8),
-            'gps:Lat': round(self.parser.lat, 8),
-            'Lon': round(self.parser.lon, 8),
-            'Alt': round(self.parser.alt, 2),
-            'Sats': self.parser.sats,
-            'Fix': self.parser.fix
-        }
-
-
 class MQTTPublisher:
     """MQTT client for publishing sensor data"""
     def __init__(self, broker=MQTT_BROKER, port=MQTT_PORT):
@@ -249,7 +220,7 @@ class MQTTPublisher:
         except Exception as e:
             print(f"✗ Failed to connect to MQTT: {e}")
     
-    def publish_imu(self, imu_data, gps_data):
+    def publish_data(self, imu_data, gps_data):
         """Publish combined IMU and GPS data to IMU/data topic"""
         if not self.connected:
             return False
@@ -260,19 +231,7 @@ class MQTTPublisher:
             self.client.publish(MQTT_TOPIC_IMU, json.dumps(payload), qos=1)
             return True
         except Exception as e:
-            print(f"Error publishing IMU data: {e}")
-            return False
-    
-    def publish_gps(self, gps_data):
-        """Publish GPS data to separate GPS/data topic"""
-        if not self.connected:
-            return False
-        
-        try:
-            self.client.publish(MQTT_TOPIC_GPS, json.dumps(gps_data), qos=1)
-            return True
-        except Exception as e:
-            print(f"Error publishing GPS data: {e}")
+            print(f"Error publishing data: {e}")
             return False
     
     def disconnect(self):
@@ -288,10 +247,11 @@ class SensorTracker:
         print("-" * 50)
         
         self.imu = IMUSensor()
-        self.gps = GPSSensor()
+        self.gps = GPSdaemon()
         self.mqtt = MQTTPublisher()
         
         self.last_publish = time.time()
+        self.last_gps_read = time.time()
         self.publish_count = 0
         self.error_count = 0
     
@@ -304,16 +264,20 @@ class SensorTracker:
             while True:
                 now = time.time()
                 
-                # Update sensors
+                # Update IMU every loop
                 self.imu.update()
-                self.gps.update()
+                
+                # Update GPS at slower rate (GPSD calls are blocking)
+                if now - self.last_gps_read >= 0.5:  # Read GPS every 500ms
+                    self.gps.update()
+                    self.last_gps_read = now
                 
                 # Publish at configured interval
                 if now - self.last_publish >= PUBLISH_INTERVAL:
                     imu_data = self.imu.get_data()
                     gps_data = self.gps.get_data()
                     
-                    if self.mqtt.publish_imu(imu_data, gps_data):
+                    if self.mqtt.publish_data(imu_data, gps_data):
                         self.publish_count += 1
                         
                         # Console output
@@ -338,8 +302,6 @@ class SensorTracker:
         print("\n" + "-" * 50)
         print("Shutting down...")
         self.mqtt.disconnect()
-        if self.gps.connected and self.gps.ser:
-            self.gps.ser.close()
         print(f"Published: {self.publish_count} messages")
         print(f"Errors: {self.error_count}")
         print("Goodbye!")
@@ -348,8 +310,8 @@ class SensorTracker:
 def main():
     print("""
     ╔══════════════════════════════════════════╗
-    ║  Jaguar Robot - Sensor Tracker v2.0      ║
-    ║  IMU + GPS → MQTT Publisher              ║
+    ║  Jaguar Robot - Sensor Tracker v3.0      ║
+    ║  IMU + GPSD → MQTT Publisher             ║
     ╚══════════════════════════════════════════╝
     """)
     
