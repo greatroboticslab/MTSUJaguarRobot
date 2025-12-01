@@ -8,6 +8,8 @@ import math
 import time
 import cv2
 import os
+import socketserver
+import select
 from collections import deque
 from datetime import datetime
 
@@ -57,6 +59,34 @@ navigation_ramp_time = 1.0  # Time to ramp up/down speed
 navigation_max_speed = None  # Will use pid_params.speed if None
 navigation_min_speed = 50   # Minimum speed for reliable movement
 
+SENSOR_TCP_PORT = 5015
+class SensorTCPHandler(socketserver.StreamRequestHandler):
+    """Handle incoming sensor data from Raspberry Pi"""
+    def handle(self):
+        print(f"Sensor connection from {self.client_address}")
+        self.request.settimeout(1.0)
+        
+        while True:
+            try:
+                # Read line-delimited JSON
+                line = self.rfile.readline().decode('utf-8').strip()
+                if not line:
+                    break
+                
+                # Parse and queue the data
+                data = json.loads(line)
+                mqtt_received_data.append(data)
+                if len(mqtt_received_data) > 40:
+                    mqtt_received_data.pop(0)
+                data_queue.put(data)
+                
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"Error processing sensor data: {e}")
+                break
+        
+        print(f"Sensor connection closed from {self.client_address}")
 # Command rate limiting variables
 last_command_time = 0
 command_delay = 0.1  # Minimum delay between commands in seconds (100ms)
@@ -66,6 +96,22 @@ last_movement_time = 0
 stop_timeout = 0.3  # Send stop if no movement commands for 300ms
 stop_thread = None
 stop_thread_active = False
+
+def start_sensor_tcp_server():
+    """Start TCP server for receiving sensor data"""
+    server = socketserver.ThreadingTCPServer(
+        ('0.0.0.0', SENSOR_TCP_PORT), 
+        SensorTCPHandler
+    )
+    server.daemon_threads = True
+    
+    def serve():
+        print(f"✓ Sensor TCP server started on port {SENSOR_TCP_PORT}")
+        server.serve_forever()
+    
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return server
 
 def camera_stream():
     global camera_cap, camera_running, latest_frame
@@ -1029,6 +1075,7 @@ def start_mqtt_client_and_logger():
 
 if __name__ == '__main__':
     # Start the auto-stop monitor
+    sensor_server = start_sensor_tcp_server()
     start_auto_stop_monitor()
     start_mqtt_client_and_logger()
     app.run(host='0.0.0.0', port=5014, debug=True, use_reloader = False)
