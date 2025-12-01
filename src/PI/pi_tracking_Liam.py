@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi IMU/GPS Position Tracker with MQTT Publisher (GPSD Version)
-Sends IMU heading, acceleration, and GPS data via GPSD to Jaguar controller
-Publishes to: IMU/data topic for Flask backend consumption
-
-SETUP:
-  sudo apt-get install gpsd gpsd-clients python3-gps3
-  sudo gpsd /dev/ttyACM0 -F /var/run/gpsd.sock
+Raspberry Pi IMU/GPS Position Tracker with TCP Socket Publisher
+Sends IMU heading, acceleration, and GPS data via TCP to Flask controller
 """
 
 import json
 import time
 import math
+import socket
 import threading
 from datetime import datetime
-import paho.mqtt.client as mqtt
 
 try:
     from adafruit_bno055 import Adafruit_BNO055
@@ -30,15 +25,14 @@ try:
     GPSD_AVAILABLE = True
 except ImportError:
     GPSD_AVAILABLE = False
-    print("Warning: gps3 (GPSD) not available - install with: pip3 install gps3")
+    print("Warning: gps3 (GPSD) not available")
 
 # Constants
 EARTH_RADIUS = 6371000
 DEG_TO_RAD = math.pi / 180
 PUBLISH_INTERVAL = 0.2  # 5Hz publishing rate
-MQTT_BROKER = "192.168.0.103"  # Change to your broker IP
-MQTT_PORT = 1883
-MQTT_TOPIC_IMU = "IMU/data"
+FLASK_SERVER = "192.168.0.103"  # Flask server IP
+FLASK_PORT = 5015  # New TCP port for sensor data (different from robot control port 10001)
 
 
 class GPSdaemon:
@@ -74,24 +68,21 @@ class GPSdaemon:
             self.connected = False
     
     def update(self):
-        """Non-blocking read from GPSD (don't call faster than 1Hz)"""
+        """Non-blocking read from GPSD"""
         if not self.connected or not self.socket:
             return False
         
         try:
-            # Read one JSON packet with short timeout
             for new_data in self.socket:
                 if new_data:
                     self.stream.unpack(new_data)
                     
-                    # Check for valid TPV (position) data
-                    if self.stream.TPV['mode'] >= 2:  # 2D or 3D fix
+                    if self.stream.TPV['mode'] >= 2:
                         self.lat = self.stream.TPV.get('lat', 0.0)
                         self.lon = self.stream.TPV.get('lon', 0.0)
                         self.alt = self.stream.TPV.get('alt', 0.0)
                         self.fix = self.stream.TPV['mode']
                         
-                        # Get satellite count from SKY data if available
                         if hasattr(self.stream, 'SKY'):
                             self.sats = self.stream.SKY.get('nSat', 0)
                         
@@ -149,14 +140,12 @@ class IMUSensor:
             return False
         
         try:
-            # Read Euler angles (heading, roll, pitch)
             euler = self.imu.read_euler()
             if euler:
                 self.heading = float(euler[0])
                 self.roll = float(euler[1])
                 self.pitch = float(euler[2])
             
-            # Read linear acceleration (gravity removed)
             accel = self.imu.read_linear_acceleration()
             if accel:
                 self.acc_x = float(accel[0])
@@ -180,75 +169,76 @@ class IMUSensor:
         }
 
 
-class MQTTPublisher:
-    """MQTT client for publishing sensor data"""
-    def __init__(self, broker=MQTT_BROKER, port=MQTT_PORT):
-        self.broker = broker
+class TCPPublisher:
+    """TCP Socket client for publishing sensor data"""
+    def __init__(self, server=FLASK_SERVER, port=FLASK_PORT):
+        self.server = server
         self.port = port
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.socket = None
         self.connected = False
-        self._setup_callbacks()
-    
-    def _setup_callbacks(self):
-        """Setup MQTT connection callbacks"""
-        self.client.on_connect = self._on_connect
-        self.client.on_disconnect = self._on_disconnect
-        self.client.on_publish = self._on_publish
-    
-    def _on_connect(self, client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            self.connected = True
-            print(f"✓ MQTT connected to {self.broker}:{self.port}")
-        else:
-            print(f"✗ MQTT connection failed with code {rc}")
-            self.connected = False
-    
-    def _on_disconnect(self, client, userdata, rc, properties=None):
-        self.connected = False
-        if rc != 0:
-            print(f"Unexpected MQTT disconnection: {rc}")
-    
-    def _on_publish(self, client, userdata, mid, rc, properties=None):
-        pass  # Silent on publish
+        self.reconnect_delay = 1
+        self.max_reconnect_delay = 30
+        self.connect()
     
     def connect(self):
-        """Connect to MQTT broker with reconnect logic"""
+        """Connect to Flask server via TCP"""
         try:
-            self.client.connect(self.broker, self.port, keepalive=60)
-            self.client.loop_start()
-            time.sleep(1)
-        except Exception as e:
-            print(f"✗ Failed to connect to MQTT: {e}")
-    
-    def publish_data(self, imu_data, gps_data):
-        """Publish combined IMU and GPS data to IMU/data topic"""
-        if not self.connected:
-            return False
-        
-        try:
-            # Combine IMU and GPS data into single payload
-            payload = {**imu_data, **gps_data}
-            self.client.publish(MQTT_TOPIC_IMU, json.dumps(payload), qos=1)
+            if self.socket:
+                self.socket.close()
+            
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5.0)
+            self.socket.connect((self.server, self.port))
+            self.socket.settimeout(None)
+            self.connected = True
+            self.reconnect_delay = 1
+            print(f"✓ TCP connected to {self.server}:{self.port}")
             return True
         except Exception as e:
-            print(f"Error publishing data: {e}")
+            print(f"✗ TCP connection failed: {e}")
+            self.connected = False
+            self.socket = None
+            return False
+    
+    def publish_data(self, imu_data, gps_data):
+        """Publish combined IMU and GPS data via TCP socket"""
+        if not self.connected:
+            if not self.connect():
+                return False
+        
+        try:
+            payload = {**imu_data, **gps_data}
+            message = json.dumps(payload) + "\n"
+            self.socket.sendall(message.encode('utf-8'))
+            return True
+        except Exception as e:
+            print(f"Error sending data: {e}")
+            self.connected = False
+            
+            # Try to reconnect with exponential backoff
+            time.sleep(self.reconnect_delay)
+            self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
             return False
     
     def disconnect(self):
-        """Gracefully disconnect from MQTT"""
-        self.client.loop_stop()
-        self.client.disconnect()
+        """Gracefully disconnect from server"""
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+        self.connected = False
 
 
 class SensorTracker:
-    """Main tracker coordinating IMU, GPS, and MQTT publishing"""
+    """Main tracker coordinating IMU, GPS, and TCP publishing"""
     def __init__(self):
-        print("Initializing Jaguar Sensor Tracker...")
+        print("Initializing Jaguar Sensor Tracker (TCP Mode)...")
         print("-" * 50)
         
         self.imu = IMUSensor()
         self.gps = GPSdaemon()
-        self.mqtt = MQTTPublisher()
+        self.tcp = TCPPublisher()
         
         self.last_publish = time.time()
         self.last_gps_read = time.time()
@@ -267,8 +257,8 @@ class SensorTracker:
                 # Update IMU every loop
                 self.imu.update()
                 
-                # Update GPS at slower rate (GPSD calls are blocking)
-                if now - self.last_gps_read >= 0.5:  # Read GPS every 500ms
+                # Update GPS at slower rate
+                if now - self.last_gps_read >= 0.5:
                     self.gps.update()
                     self.last_gps_read = now
                 
@@ -277,7 +267,7 @@ class SensorTracker:
                     imu_data = self.imu.get_data()
                     gps_data = self.gps.get_data()
                     
-                    if self.mqtt.publish_data(imu_data, gps_data):
+                    if self.tcp.publish_data(imu_data, gps_data):
                         self.publish_count += 1
                         
                         # Console output
@@ -291,7 +281,6 @@ class SensorTracker:
                     
                     self.last_publish = now
                 
-                # Small sleep to prevent CPU spinning
                 time.sleep(0.01)
         
         except KeyboardInterrupt:
@@ -301,7 +290,7 @@ class SensorTracker:
         """Clean shutdown"""
         print("\n" + "-" * 50)
         print("Shutting down...")
-        self.mqtt.disconnect()
+        self.tcp.disconnect()
         print(f"Published: {self.publish_count} messages")
         print(f"Errors: {self.error_count}")
         print("Goodbye!")
@@ -310,16 +299,12 @@ class SensorTracker:
 def main():
     print("""
     ╔══════════════════════════════════════════╗
-    ║  Jaguar Robot - Sensor Tracker v3.0      ║
-    ║  IMU + GPSD → MQTT Publisher             ║
+    ║  Jaguar Robot - Sensor Tracker v3.1      ║
+    ║  IMU + GPSD → TCP Publisher              ║
     ╚══════════════════════════════════════════╝
     """)
     
     tracker = SensorTracker()
-    
-    # Attempt MQTT connection
-    print("Connecting to MQTT broker...")
-    tracker.mqtt.connect()
     
     if tracker.imu.connected or tracker.gps.connected:
         tracker.run()
