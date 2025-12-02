@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Final Full Code with Lock Heading & robot.png + Interpolation + 1m Radius Correction</title>
+    <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.css"
+    />
+    <style>
+        body {
+            margin: 0;
+            background-color: #fff;
+        }
+        #map {
+            height: 100vh;
+            width: 100%;
+            position: relative;
+            /* transition for smooth map rotation on heading lock */
+            transition: transform 0.3s ease;
+        }
+
+        /* Compass Container */
+        #compass-container {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            width: 150px;
+            height: 150px;
+            background: url('https://upload.wikimedia.org/wikipedia/commons/thumb/f/f8/Compass_Rose_English_North.svg/1024px-Compass_Rose_English_North.svg.png') no-repeat center;
+            background-size: cover;
+            border: 2px solid #ddd;
+            border-radius: 50%;
+            z-index: 1001;
+        }
+        #imu-arrow {
+            position: absolute;
+            width: 10px;
+            height: 70px;
+            background: red;
+            transform-origin: bottom center;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -100%) rotate(0deg);
+            z-index: 1002;
+            clip-path: polygon(50% 0%, 100% 100%, 50% 80%, 0% 100%);
+        }
+
+        /* Data Panel */
+        #data-panel {
+            position: absolute;
+            top: 50px;
+            right: 10px;
+            width: 300px;
+            height: 400px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #ddd;
+            display: none;
+            z-index: 1000;
+            padding: 10px;
+        }
+        .data-line {
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            margin: 5px 0;
+        }
+
+        /* Buttons (top-right corner) */
+        #connect-btn {
+            position: absolute;
+            top: 10px;
+            right: 170px;
+            z-index: 1003;
+            background: #fff;
+            color: #000;
+            padding: 10px 20px;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #connect-btn:hover {
+            background: #f1f1f1;
+        }
+
+        #point-btn {
+            position: absolute;
+            top: 10px;
+            right: 90px;
+            z-index: 1003;
+            background: #28A745;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #point-btn:hover {
+            background: #1e7e34;
+        }
+
+        #pid-btn {
+            position: absolute;
+            top: 10px;
+            right: 310px;
+            z-index: 1003;
+            background: #FF8C00;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #pid-btn:hover {
+            background: #e07b00;
+        }
+
+        #data-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1003;
+            background: #007BFF;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #data-btn:hover {
+            background: #0056b3;
+        }
+
+        #camera-btn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1003;
+            background: #6c757d;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #camera-btn:hover {
+            background: #5a6268;
+        }
+        #camera-btn.active {
+            background: #28a745;
+        }
+
+        #navigation-btn {
+            position: absolute;
+            top: 70px;
+            left: 20px;
+            z-index: 1003;
+            background: #dc3545;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #navigation-btn:hover {
+            background: #c82333;
+        }
+        #navigation-btn.active {
+            background: #28a745;
+        }
+        #camera-btn.active:hover {
+            background: #218838;
+        }
+        #capture-btn {
+            position: absolute;
+            top: 120px;
+            left: 20px;
+            z-index: 1003;
+            background: #17a2b8;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #capture-btn:hover {
+            background: #138496;
+        }
+        #capture-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.65;
+        }
+        #capture-btn.capturing {
+            background: #ffc107;
+            color: #000;
+        }
+        #capture-btn.capturing:hover {
+            background: #e0a800;
+        }
+        #camera-view {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: none;
+            z-index: 999;
+        }
+        #camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #camera-close {
+            position: absolute;
+            top: 20px;
+            left: 120px;
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 1000;
+        }
+        #camera-close:hover {
+            background: #5a6268;
+        }
+        #camera-close.active {
+            background: #28a745;
+        }
+        #go-btn, #stop-btn {
+            position: absolute;
+            z-index: 1003;
+            background: #ccc;
+            color: #fff;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            display: none;
+        }
+        #go-btn:hover {
+            background: #888;
+        }
+        #stop-btn:hover {
+            background: #888;
+        }
+        #go-btn {
+            top: 50px;
+            right: 90px;
+        }
+        #stop-btn {
+            top: 90px;
+            right: 90px;
+        }
+
+        /* Distance label for dashed lines */
+        .distance-label {
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        /* PID Panel */
+        #pid-panel {
+            position: absolute;
+            top: 50px;
+            right: 10px;
+            width: 250px;
+            height: 280px;
+            background: #fff;
+            border: 1px solid #ddd;
+            display: none;
+            z-index: 1005;
+            padding: 10px;
+        }
+        #pid-panel input {
+            width: 50px;
+        }
+        #pid-update-btn {
+            background: #333;
+            color: #fff;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        #pid-update-btn:hover {
+            background: #555;
+        }
+
+        /* fused marker => rotate with heading as well */
+        .fused-icon {
+            width: 60px;
+            height: 60px;
+            background: url('../static/robot.png') no-repeat center;
+            background-size: contain;
+            /* We'll rotate this in JS */
+            transform-origin: 30px 30px; /* center anchor */
+        }
+
+        /* Lock Heading button => bottom-left corner */
+        #lock-btn {
+            position: absolute;
+            bottom: 10px;
+            left: 180px;
+            z-index: 1003;
+            background: #ccc;
+            color: #000;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #lock-btn:hover {
+            background: #888;
+        }
+    </style>
+</head>
+<body>
+    <!-- Buttons -->
+    <button id="connect-btn">Connect Robot</button>
+    <button id="point-btn">Point</button>
+    <button id="pid-btn">PID</button>
+    <button id="data-btn">Data</button>
+    <button id="go-btn">Go</button>
+    <button id="stop-btn">Stop</button>
+    <!-- Lock Heading -->
+    <button id="lock-btn">Lock Heading: OFF</button>
+
+    <!-- Camera Buttons -->
+    <button id="camera-btn">Camera</button>
+    <button id="capture-btn">Photo</button>
+    <button id="navigation-btn">Navigation: OFF</button>
+    <button id="camera-close">Back to Map</button>
+
+    <!-- Camera View -->
+    <div id="camera-view">
+        <img id="camera-feed" src="/camera-stream" alt="Camera Feed">
+    </div>
+
+    <!-- data panel -->
+    <div id="data-panel"></div>
+
+    <!-- pid panel -->
+    <div id="pid-panel">
+        <h3>PID + Speed</h3>
+        <label>Kp:</label><input type="number" step="0.1" id="kp" value="1.0"><br><br>
+        <label>Ki:</label><input type="number" step="0.1" id="ki" value="0.0"><br><br>
+        <label>Kd:</label><input type="number" step="0.1" id="kd" value="0.0"><br><br>
+        <label>Spd:</label><input type="number" step="10" id="speed" value="150"><br><br>
+        <label>NavDur:</label><input type="number" step="1" id="nav" value="20"><br><br>
+        <button id="pid-update-btn">Update</button>
+    </div>
+
+    <div id="map"></div>
+
+    <!-- Compass container -->
+    <div id="compass-container">
+        <div id="imu-arrow"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.js"></script>
+    <script>
+        // Global references
+        let map = null, gpsMarker = null, gpsCircle = null, fusedMarker = null;
+        let isPointMode = false, robotConnected = false;
+        let clickedPoints = [], linesAndLabels = [];
+        let ghostLine = null, ghostLabel = null;
+
+        // autopilot
+        let autopilotOn = false;
+        let currentTargetIndex = 0;
+        let userKp = 1.0, userKi = 0.0, userKd = 0.0, userNav = 20;
+        let userIntegral = 0.0, prevError = 0.0;
+
+        // lock heading => revolve #map
+        let headingLock = false;
+        let headingLockAngle = 0;
+        let lockHeadingThreshold = 5;
+        let lastLockHeading = 0;
+
+        // route interpolation
+        let routeCheckpoints = [];
+
+        // AUTO-CAPTURE STATE
+        let isCapturing = false;
+        let captureInterval = null;
+
+        // offline grid
+        const OfflineGridLayer = L.GridLayer.extend({
+            createTile: function(coords){
+                const tile = L.DomUtil.create('canvas','leaflet-tile');
+                tile.width = 256;
+                tile.height = 256;
+                const ctx = tile.getContext('2d');
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(0,0,256,256);
+                const spacing = 50;
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1;
+                for(let x=0;x<256;x+=spacing){
+                    ctx.beginPath();
+                    ctx.moveTo(x,0);
+                    ctx.lineTo(x,256);
+                    ctx.stroke();
+                }
+                for(let y=0;y<256;y+=spacing){
+                    ctx.beginPath();
+                    ctx.moveTo(0,y);
+                    ctx.lineTo(256,y);
+                    ctx.stroke();
+                }
+                return tile;
+            }
+        });
+
+        function interpolateSegment(start, end){
+            let points = [];
+            let dist = haversineDistance(start, end);
+            if(dist <= 0.0) return points;
+            let steps = Math.floor(dist);
+            for(let i=0; i<=steps; i++){
+                let t = i/steps;
+                let lat = start.lat + (end.lat - start.lat)*t;
+                let lng = start.lng + (end.lng - start.lng)*t;
+                points.push({lat, lng});
+            }
+            return points;
+        }
+
+        function initializeMap(lat, lon, fusedLat, fusedLon){
+            map = L.map('map').setView([lat, lon], 16);
+            new OfflineGridLayer().addTo(map);
+
+            gpsMarker = L.circleMarker([lat, lon], {
+                color: '#007BFF', fillColor: '#007BFF',
+                fillOpacity: 0.5, radius: 8
+            }).addTo(map);
+
+            gpsCircle = L.circle([lat, lon], {
+                color: '#007BFF', fillColor: '#007BFF',
+                fillOpacity: 0.2, radius: 20
+            }).addTo(map);
+
+            const fusedDivIcon = L.divIcon({
+                className: '',
+                html: '<div class="fused-icon" id="fused-robot-icon"></div>',
+                iconSize: [60,60],
+                iconAnchor: [30,30]
+            });
+            fusedMarker = L.marker([fusedLat, fusedLon], {icon: fusedDivIcon}).addTo(map);
+
+            map.on('click', onMapClick);
+            map.on('mousemove', onMapMouseMove);
+        }
+
+        function applyLockHeading(heading){
+            if(!headingLock){
+                document.getElementById('map').style.transform = 'rotate(0deg)';
+                headingLockAngle = 0;
+                return;
+            }
+            let diff = heading - lastLockHeading;
+            diff = ((diff + 180) % 360) - 180;
+            if(Math.abs(diff) > lockHeadingThreshold){
+                document.getElementById('map').style.transform = `rotate(${-heading}deg)`;
+                headingLockAngle = heading;
+                lastLockHeading = heading;
+            }
+        }
+
+        function onMapMouseMove(e){
+            if(!isPointMode) return;
+            let adjusted = adjustCoordinatesForLock(e.latlng);
+            let ref;
+            if(clickedPoints.length === 0){
+                if(gpsMarker) ref = gpsMarker.getLatLng();
+            } else {
+                ref = clickedPoints[clickedPoints.length - 1];
+            }
+            if(!ref) return;
+
+            if(ghostLine){
+                map.removeLayer(ghostLine);
+                ghostLine = null;
+            }
+            if(ghostLabel){
+                map.removeLayer(ghostLabel);
+                ghostLabel = null;
+            }
+
+            ghostLine = L.polyline([ref, adjusted], {
+                color: 'blue', dashArray: '4,4'
+            }).addTo(map);
+            ghostLine.bringToFront();
+
+            const dist = haversineDistance(ref, adjusted);
+            const midLat = (ref.lat + adjusted.lat)/2;
+            const midLng = (ref.lng + adjusted.lng)/2;
+            const lblIcon = L.divIcon({
+                className: 'distance-label',
+                html: dist.toFixed(2) + ' m'
+            });
+            ghostLabel = L.marker([midLat, midLng], {icon: lblIcon}).addTo(map);
+            ghostLabel.setZIndexOffset(10000);
+        }
+
+        function onMapClick(e){
+            if(!isPointMode) return;
+            let adjusted = adjustCoordinatesForLock(e.latlng);
+
+            let startLatLng;
+            if(clickedPoints.length === 0){
+                if(gpsMarker) startLatLng = gpsMarker.getLatLng();
+            } else {
+                startLatLng = clickedPoints[clickedPoints.length - 1];
+            }
+            const newLatLng = adjusted;
+            clickedPoints.push(newLatLng);
+
+            if(!startLatLng) return;
+            const polyline = L.polyline([startLatLng, newLatLng], {
+                color: 'red', dashArray: '5,5'
+            }).addTo(map);
+            polyline.bringToFront();
+
+            const dist = haversineDistance(startLatLng, newLatLng);
+            const midLat = (startLatLng.lat + newLatLng.lat)/2;
+            const midLng = (startLatLng.lng + newLatLng.lng)/2;
+            const lblIcon = L.divIcon({
+                className: 'distance-label',
+                html: dist.toFixed(2) + ' m'
+            });
+            const lblMarker = L.marker([midLat, midLng], {icon: lblIcon}).addTo(map);
+            lblMarker.setZIndexOffset(10000);
+
+            linesAndLabels.push({ line: polyline, label: lblMarker });
+
+            let segIndex = clickedPoints.length - 2;
+            if(segIndex < 0) segIndex = 0;
+            if(!window.routeCheckpoints) window.routeCheckpoints = [];
+            let subpoints = interpolateSegment(startLatLng, newLatLng);
+            routeCheckpoints[segIndex] = subpoints;
+        }
+        function adjustCoordinatesForLock(latlng){
+            if(!headingLock) return latlng;
+            const angleRad = (headingLockAngle * Math.PI)/180.0;
+            const center = map.getCenter();
+            const dx = latlng.lng - center.lng;
+            const dy = latlng.lat - center.lat;
+            const rotatedX = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+            const rotatedY = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+            return {lat: center.lat + rotatedY, lng: center.lng + rotatedX};
+        }
+
+        function haversineDistance(p1, p2){
+            const R = 6371000; // meters
+            const dLat = (p2.lat - p1.lat) * Math.PI / 180;
+            const dLon = (p2.lng - p1.lng) * Math.PI / 180;
+            const lat1 = p1.lat * Math.PI / 180;
+            const lat2 = p2.lat * Math.PI / 180;
+
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.sin(dLon/2) * Math.sin(dLon/2) * Math.cos(lat1) * Math.cos(lat2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // Camera functionality
+        const cameraBtn = document.getElementById('camera-btn');
+        const cameraView = document.getElementById('camera-view');
+        const cameraClose = document.getElementById('camera-close');
+        const captureBtn = document.getElementById('capture-btn');
+
+        cameraBtn.addEventListener('click', ()=>{
+            cameraView.style.display = 'block';
+            cameraBtn.classList.add('active');
+            cameraClose.classList.remove('active');
+            fetch('/toggle-camera', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'start'})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.success) console.log('Camera started');
+                else console.error('Camera start error:', data.error);
+            })
+            .catch(err => console.error('Camera start error:', err));
+        });
+
+        cameraClose.addEventListener('click', ()=>{
+            cameraView.style.display = 'none';
+            cameraBtn.classList.remove('active');
+            cameraClose.classList.add('active');
+            if(isCapturing){
+                stopCapturePhoto();
+            }
+            fetch('/toggle-camera', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'stop'})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.success) console.log('Camera stopped');
+                else console.error('Camera stop error:', data.error);
+            })
+            .catch(err => console.error('Camera stop error:', err));
+        });
+
+        // Photo capture
+        captureBtn.addEventListener('click', () => {
+            if(!isCapturing){
+                startCapturePhoto();
+            } else {
+                stopCapturePhoto();
+            }
+        });
+
+        function startCapturePhoto(){
+            isCapturing = true;
+            captureBtn.classList.add('capturing');
+            captureBtn.textContent = 'Stop Capturing';
+            console.log('Starting auto-capture...');
+            captureOnce();
+            captureInterval = setInterval(captureOnce, 3000);
+        }
+
+        function stopCapturePhoto(){
+            isCapturing = false;
+            if(captureInterval){
+                clearInterval(captureInterval);
+                captureInterval = null;
+            }
+            captureBtn.classList.remove('capturing');
+            captureBtn.textContent = 'Photo';
+            console.log('Stopped auto-capture');
+        }
+
+        function captureOnce(){
+            fetch('/capture-photo', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if(data.success){
+                    console.log('Photo saved:', data.filename);
+                } else {
+                    console.error('Photo capture error:', data.error);
+                }
+            })
+            .catch(err => console.error('Photo capture error:', err));
+        }
+
+        // Lock heading button
+        const lockBtnElem = document.getElementById('lock-btn');
+        lockBtnElem.addEventListener('click', ()=>{
+            headingLock = !headingLock;
+            lockBtnElem.textContent = headingLock ? 'Lock Heading: ON' : 'Lock Heading: OFF';
+            lockBtnElem.style.background = headingLock ? 'green' : '#ccc';
+            lastLockHeading = 0;
+        });
+
+        // Data panel toggle
+        const dataBtn = document.getElementById('data-btn');
+        dataBtn.addEventListener('click', ()=>{
+            const panel = document.getElementById('data-panel');
+            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+        });
+
+        // Point mode toggle
+        const pointBtn = document.getElementById('point-btn');
+        const goBtn = document.getElementById('go-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        pointBtn.addEventListener('click', ()=>{
+            isPointMode = !isPointMode;
+            if(isPointMode){
+                alert("Point mode ON. (Space => Robot STOP)");
+                goBtn.style.display = 'block';
+                stopBtn.style.display = 'block';
+            } else {
+                alert("Point mode OFF. Clearing lines.");
+                goBtn.style.display = 'none';
+                stopBtn.style.display = 'none';
+                clickedPoints = [];
+                linesAndLabels.forEach(o=>{
+                    map.removeLayer(o.line);
+                    map.removeLayer(o.label);
+                });
+                linesAndLabels = [];
+                routeCheckpoints = [];
+                autopilotOn = false;
+                currentTargetIndex = 0;
+                if(ghostLine){
+                    map.removeLayer(ghostLine);
+                    ghostLine = null;
+                }
+                if(ghostLabel){
+                    map.removeLayer(ghostLabel);
+                    ghostLabel = null;
+                }
+            }
+        });
+
+        // Go / Stop buttons
+        goBtn.addEventListener('click', ()=>{
+            if(!robotConnected){
+                alert("Robot not connected!");
+                return;
+            }
+            if(clickedPoints.length === 0){
+                alert("No waypoints set!");
+                return;
+            }
+            autopilotOn = true;
+            currentTargetIndex = 0;
+            userIntegral = 0;
+            prevError = 0;
+            console.log("Autopilot ON. Following points with user PID...");
+        });
+
+        stopBtn.addEventListener('click', ()=>{
+            autopilotOn = false;
+            currentTargetIndex = 0;
+            sendAutopilotCmd('stop');
+            console.log("Autopilot STOPPED.");
+        });
+
+        // Robot connect button
+        const connectBtn = document.getElementById('connect-btn');
+        connectBtn.addEventListener('click', ()=>{
+            fetch('/connect-robot', {method: 'POST'})
+            .then(r => r.json())
+            .then(d => {
+                if(d.success){
+                    connectBtn.style.backgroundColor = 'green';
+                    robotConnected = true;
+                } else {
+                    connectBtn.style.backgroundColor = 'red';
+                    robotConnected = false;
+                }
+            })
+            .catch(e=>{
+                connectBtn.style.backgroundColor = 'red';
+                robotConnected = false;
+                console.error(e);
+            });
+        });
+
+        // WASD + Space keyboard control
+        document.addEventListener('keydown', e=>{
+            if(!robotConnected) return;
+            if(isPointMode && e.code === 'Space'){
+                e.preventDefault();
+                sendRobotCommand('stop');
+                console.log("Space => Robot STOP in point mode");
+                return;
+            }
+            const key = e.key.toLowerCase();
+            if(['w','a','s','d'].includes(key)){
+                sendRobotCommand(key);
+            }
+        });
+
+        document.addEventListener('keyup', e=>{
+            if(!robotConnected) return;
+            const key = e.key.toLowerCase();
+            if(['w','a','s','d'].includes(key)){
+                sendRobotCommand('stop');
+            }
+        });
+
+        // PID Panel
+        const pidPanel = document.getElementById('pid-panel');
+        const pidBtn = document.getElementById('pid-btn');
+        pidBtn.addEventListener('click', ()=>{
+            pidPanel.style.display = pidPanel.style.display === 'block' ? 'none' : 'block';
+        });
+
+        document.getElementById('pid-update-btn').addEventListener('click', ()=>{
+            const kpVal = parseFloat(document.getElementById('kp').value);
+            const kiVal = parseFloat(document.getElementById('ki').value);
+            const kdVal = parseFloat(document.getElementById('kd').value);
+            const spVal = parseFloat(document.getElementById('speed').value);
+            const navDur = parseFloat(document.getElementById('nav').value);
+
+            fetch('/pid-update', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({kp: kpVal, ki: kiVal, kd: kdVal, speed: spVal, nav: navDur})
+            })
+            .then(r => r.json())
+            .then(d=>{
+                alert(`PID/Speed updated:\nKp=${d.kp}\nKi=${d.ki}\nKd=${d.kd}\nSpeed=${d.speed}\nNavDur=${d.nav}`);
+                userKp = parseFloat(d.kp);
+                userKi = parseFloat(d.ki);
+                userKd = parseFloat(d.kd);
+                userNav = parseFloat(d.nav);
+                userIntegral = 0;
+                prevError = 0;
+            })
+            .catch(e=> console.error("Error updating PID:", e));
+        });
+
+        // Navigation keyboard + button
+        let navigationActive = false;
+        document.addEventListener('keydown', function(event){
+            if(event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+            switch(event.key.toLowerCase()){
+                case 'w': sendRobotCommand('w'); event.preventDefault(); break;
+                case 's': sendRobotCommand('s'); event.preventDefault(); break;
+                case 'a': sendRobotCommand('a'); event.preventDefault(); break;
+                case 'd': sendRobotCommand('d'); event.preventDefault(); break;
+                case 'n': toggleNavigation(); event.preventDefault(); break;
+                case ' ': sendRobotCommand('stop'); event.preventDefault(); break;
+            }
+        });
+
+        const navBtn = document.getElementById('navigation-btn');
+        navBtn.addEventListener('click', ()=>{ toggleNavigation(); });
+
+        function toggleNavigation(){
+            navigationActive = !navigationActive;
+            sendRobotCommand('n');
+            updateNavigationButton();
+        }
+
+        function updateNavigationButton(){
+            if(navigationActive){
+                navBtn.textContent = 'Navigation: ON';
+                navBtn.classList.add('active');
+            } else {
+                navBtn.textContent = 'Navigation: OFF';
+                navBtn.classList.remove('active');
+            }
+        }
+
+        function sendRobotCommand(cmd){
+            fetch('/robot-cmd', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({cmd})
+            })
+            .then(resp => resp.json())
+            .then(d => console.log('Robot command sent:', cmd))
+            .catch(err => console.error('Error sending robot command:', err));
+        }
+
+        function sendAutopilotCmd(cmd){
+            fetch('/autopilot-cmd', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({cmd})
+            })
+            .then(resp => resp.json())
+            .then(d => console.log('Autopilot command sent:', cmd))
+            .catch(err => console.error('Error sending autopilot command:', err));
+        }
+    </script>
+</body>
+</html>
