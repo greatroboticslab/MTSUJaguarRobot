@@ -2,14 +2,14 @@
 """
 Raspberry Pi IMU/GPS Position Tracker with TCP Socket Publisher
 Sends IMU heading, acceleration, and GPS data via TCP to Flask controller
+Simplified version without MQTT
 """
 
 import json
 import time
 import math
 import socket
-import threading
-from datetime import datetime
+import sys
 
 try:
     from adafruit_bno055 import Adafruit_BNO055
@@ -18,25 +18,23 @@ try:
     BNO055_AVAILABLE = True
 except ImportError:
     BNO055_AVAILABLE = False
-    print("Warning: BNO055 not available")
+    print("⚠ Warning: BNO055 not available (running in simulation mode)")
 
 try:
     from gps3 import agps3
     GPSD_AVAILABLE = True
 except ImportError:
     GPSD_AVAILABLE = False
-    print("Warning: gps3 (GPSD) not available")
+    print("⚠ Warning: gps3 (GPSD) not available (running in simulation mode)")
 
 # Constants
-EARTH_RADIUS = 6371000
-DEG_TO_RAD = math.pi / 180
 PUBLISH_INTERVAL = 0.2  # 5Hz publishing rate
-FLASK_SERVER = "192.168.0.103"  # Flask server IP
-FLASK_PORT = 5015  # New TCP port for sensor data (different from robot control port 10001)
+FLASK_SERVER = "192.168.0.103"  # Flask server IP - CHANGE THIS TO YOUR JAGUAR IP
+FLASK_PORT = 5015  # TCP port for sensor data
 
 
 class GPSdaemon:
-    """GPSD client for GPS data via socket (non-blocking)"""
+    """GPSD client for GPS data (non-blocking)"""
     def __init__(self, host='127.0.0.1', port=2947):
         self.host = host
         self.port = port
@@ -45,9 +43,6 @@ class GPSdaemon:
         self.alt = 0.0
         self.sats = 0
         self.fix = 0
-        self.last_valid = time.time()
-        self.socket = None
-        self.stream = None
         self.connected = False
         self._init_gpsd()
     
@@ -69,7 +64,7 @@ class GPSdaemon:
     
     def update(self):
         """Non-blocking read from GPSD"""
-        if not self.connected or not self.socket:
+        if not self.connected:
             return False
         
         try:
@@ -86,12 +81,12 @@ class GPSdaemon:
                         if hasattr(self.stream, 'SKY'):
                             self.sats = self.stream.SKY.get('nSat', 0)
                         
-                        self.last_valid = time.time()
                         return True
             
             return False
         except Exception as e:
-            print(f"Error reading GPSD: {e}")
+            print(f"✗ Error reading GPSD: {e}")
+            self.connected = False
             return False
     
     def get_data(self):
@@ -136,7 +131,7 @@ class IMUSensor:
     
     def update(self):
         """Read latest IMU data"""
-        if not self.connected or not self.imu:
+        if not self.connected:
             return False
         
         try:
@@ -154,7 +149,8 @@ class IMUSensor:
             
             return True
         except Exception as e:
-            print(f"Error reading IMU: {e}")
+            print(f"✗ Error reading IMU: {e}")
+            self.connected = False
             return False
     
     def get_data(self):
@@ -212,7 +208,7 @@ class TCPPublisher:
             self.socket.sendall(message.encode('utf-8'))
             return True
         except Exception as e:
-            print(f"Error sending data: {e}")
+            print(f"✗ Error sending data: {e}")
             self.connected = False
             
             # Try to reconnect with exponential backoff
@@ -234,6 +230,8 @@ class SensorTracker:
     """Main tracker coordinating IMU, GPS, and TCP publishing"""
     def __init__(self):
         print("Initializing Jaguar Sensor Tracker (TCP Mode)...")
+        print("-" * 50)
+        print(f"Target: {FLASK_SERVER}:{FLASK_PORT}")
         print("-" * 50)
         
         self.imu = IMUSensor()
@@ -257,8 +255,8 @@ class SensorTracker:
                 # Update IMU every loop
                 self.imu.update()
                 
-                # Update GPS at slower rate
-                if now - self.last_gps_read >= 0.5:
+                # Update GPS at same rate as publish
+                if now - self.last_gps_read >= PUBLISH_INTERVAL:
                     self.gps.update()
                     self.last_gps_read = now
                 
@@ -299,17 +297,16 @@ class SensorTracker:
 def main():
     print("""
     ╔══════════════════════════════════════════╗
-    ║  Jaguar Robot - Sensor Tracker v3.1      ║
+    ║  Jaguar Robot - Sensor Tracker v4.0      ║
     ║  IMU + GPSD → TCP Publisher              ║
+    ║  Simplified & Fixed Edition              ║
     ╚══════════════════════════════════════════╝
     """)
     
     tracker = SensorTracker()
     
-    if tracker.imu.connected or tracker.gps.connected:
-        tracker.run()
-    else:
-        print("✗ No sensors initialized. Check connections and try again.")
+    # Run even if sensors aren't available (for testing)
+    tracker.run()
 
 
 if __name__ == "__main__":
